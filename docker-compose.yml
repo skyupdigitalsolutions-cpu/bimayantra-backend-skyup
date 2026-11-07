@@ -1,0 +1,26 @@
+# Local development infrastructure. The API itself runs on the host with `npm run dev`.
+#
+# MongoDB is NOT here: this setup uses your locally installed MongoDB (Windows service, 127.0.0.1:27017),
+# so the API and Compass look at the same data. For transactions, turn it into a single-node replica set
+# (README, "MongoDB replica set").
+#
+# Start with:  docker compose up -d     (Docker Desktop must be running; the API refuses to start without Redis.)
+
+services:
+  # Cache, rate counters (CFG-10, CFG-99) and the dev SMS inbox.
+  redis-cache:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports: ["6379:6379"]
+    restart: unless-stopped
+
+  # Job queue for scheduled and provider work (SYS-xx, outbox). noeviction: jobs are never silently dropped.
+  redis-queue:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports: ["6380:6379"]
+    volumes: [redis-queue-data:/data]
+    restart: unless-stopped
+
+volumes:
+  redis-queue-data:
