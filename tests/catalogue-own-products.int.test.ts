@@ -54,7 +54,7 @@ describe('P-22 step 2: types and live features for + My product (read-only)', ()
     const r = await as(adv.token).get('/my-products/types');
     expect(r.status).toBe(200);
     // Motor has only a DRAFT template; Travel is INACTIVE: an own product could not be built on either.
-    expect(r.body.data).toEqual([{ id: cat.healthId, name: 'Health', private: false, template: { id: cat.tplId, number: 1 } }]); // `private`: Stage F (change #4)
+    expect(r.body.data).toEqual([{ id: cat.healthId, name: 'Health', private: false, productForm: 'HEALTH', template: { id: cat.tplId, number: 1 } }]); // `private`: Stage F (change #4); `productForm`: category details
   });
 
   it('returns the live template\'s features in order, and nothing an advisor does not need', async () => {
@@ -64,6 +64,7 @@ describe('P-22 step 2: types and live features for + My product (read-only)', ()
     expect(r.status).toBe(200);
     expect(r.body.data).toEqual({
       typeId: cat.healthId, typeName: 'Health', private: false, template: { id: cat.tplId, number: 1 },
+      productForm: 'HEALTH', form: expect.objectContaining({ code: 'HEALTH', entryAges: 'ADULT_CHILD' }), // category details
       features: [
         { key: 'room_rent', name: 'Room rent limit', group: 'Limits and sub-limits', dataType: 'Amount in ₹', requiredToPublish: true, order: 1, help: 'Per day' },
         { key: 'ped_wait', name: 'Pre-existing disease waiting period', group: 'Waiting periods', dataType: 'Months', requiredToPublish: true, order: 2, help: null },
@@ -192,12 +193,13 @@ describe('GR-33 / GR-10 on own products', () => {
 });
 
 describe('found while building the Stage 3b screens', () => {
-  it('a new verified draft returns data as {} (Mongoose drops an empty object on save)', async () => {
+  it('a new verified draft returns its data, never without it (Mongoose drops an empty object on save): the category\'s features listed, empty details', async () => {
     const cat = await catalogue();
     const staff = await seedAdmin();
     const made = await as(staff.token).post('/admin/products', { insurerId: cat.insurerId, typeId: cat.healthId, code: 'NEW-1' });
-    expect(made.body.data.version.data).toEqual({});
+    const blank = { form: 'HEALTH', details: {}, features: { room_rent: { value: null }, ped_wait: { value: null }, ambulance: { value: null } } };
+    expect(made.body.data.version.data).toEqual(blank);
     const got = (await as(staff.token).get(`/admin/products/${made.body.data.productId}`)).body.data;
-    expect(got.versions[0].data).toEqual({});
+    expect(got.versions[0].data).toEqual(blank);
   });
-}); 
+});

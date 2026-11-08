@@ -17,6 +17,7 @@ import { audit } from '../audit/audit.service.js';
 import { Insurer, type InsurerDoc } from '../insurers/insurer.model.js';
 import type { AuthContext } from '../rbac/capabilities.js';
 import { InsuranceType, TemplateVersion, type InsuranceTypeDoc } from './types.model.js';
+import { guessProductForm, type ProductFormCode } from './productForms.js';
 
 /** Owner filter: the SkyUp library plus this account's private items. */
 export const visibleTo = (accountId: string | null | undefined) => ({ ownerAccountId: { $in: [null, ...(accountId ? [accountId] : [])] } });
@@ -48,15 +49,19 @@ export async function addInsurer(ctx: AuthContext, b: { name: string }, req: Req
   }
 }
 
-/** Step 1 "create a category": no SkyUp template; an empty live template is made with it (one transaction). */
-export async function addCategory(ctx: AuthContext, b: { name: string }, req: Request) {
+/**
+ * Step 1 "create a category": no SkyUp template; an empty live template is made with it (one transaction). The
+ * advisor may pick which product details it carries (productForm); otherwise it follows the name.
+ */
+export async function addCategory(ctx: AuthContext, b: { name: string; productForm?: ProductFormCode | null }, req: Request) {
   const name = b.name.trim();
+  const productForm = b.productForm ?? guessProductForm(name);
   try {
     return await withTx(async (session) => {
-      const [t] = await InsuranceType.create([{ name, nameKey: name.toLowerCase(), ownerAccountId: ctx.accountId, status: 'ACTIVE' }], { session: session ?? undefined });
+      const [t] = await InsuranceType.create([{ name, nameKey: name.toLowerCase(), ownerAccountId: ctx.accountId, status: 'ACTIVE', productForm }], { session: session ?? undefined });
       const [tpl] = await TemplateVersion.create([{ typeId: t!._id, number: 1, status: 'ACTIVE', isOpen: null, features: [], factors: [], questions: [], makerId: ctx.userId, approvedAt: new Date() }], { session: session ?? undefined });
-      await audit({ entity: 'insuranceType', entityId: t!._id, action: 'PRIVATE_CATEGORY_ADDED', after: { name } }, { req, session });
-      return { id: t!._id, name: t!.name, private: true, template: { id: tpl!._id, number: 1 } };
+      await audit({ entity: 'insuranceType', entityId: t!._id, action: 'PRIVATE_CATEGORY_ADDED', after: { name, productForm } }, { req, session });
+      return { id: t!._id, name: t!.name, private: true, productForm, template: { id: tpl!._id, number: 1 } };
     });
   } catch (e) {
     if (isDuplicateKey(e)) throw AppError.field('name', 'CAT-50', { name });

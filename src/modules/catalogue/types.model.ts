@@ -1,5 +1,6 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
+import { PRODUCT_FORMS } from './productForms.js';
 
 /**
  * P-21 Insurance types and their feature templates. A type is ACTIVE or INACTIVE. Each change to its template is
@@ -18,6 +19,11 @@ const typeSchema = new Schema(
     status: { type: String, enum: ['ACTIVE', 'INACTIVE'], default: 'ACTIVE' },
     /** Change #4: null = a SkyUp category for every advisor; an account ID = that advisor's private category. */
     ownerAccountId: { type: String, default: null },
+    /**
+     * Which category-specific product details its products carry (productForms.ts): HEALTH, MOTOR_CAR, TERM_LIFE…
+     * null on types made before this was added: the form then follows the name (guessProductForm).
+     */
+    productForm: { type: String, enum: [...PRODUCT_FORMS, null], default: null },
     version: { type: Number, default: 1 },
   },
   { timestamps: true, versionKey: false },

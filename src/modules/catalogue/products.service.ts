@@ -16,6 +16,7 @@ import { assertVisibleInsurer, assertVisibleType } from './private.service.js';
 import { ProductVariant, defaultVariantFor } from './variant.model.js';
 import { InsurerMapping } from '../insurers/mapping.model.js';
 import { asInput, checkVariants, copyVariants, missingOnVariants, normaliseCustomFeatures, variantsOf, writeVariants, type CustomFeature, type FeatureValue, type VariantInput } from './variants.service.js';
+import { checkDetails, formOfType, formView, missingDetails, productForm, type ProductForm } from './productForms.js';
 
 /** The product version's values (validated field by field on the route; completeness is checked on submit). */
 export interface ProductData {
@@ -30,6 +31,10 @@ export interface ProductData {
   brochureFileId?: string | null; sourceLink?: string | null; sourceCheckedOn?: string | null;
   /** Change #5: features outside the template (the advisor's own, AI-suggested ones ticked to add, or SkyUp's). */
   customFeatures?: CustomFeature[];
+  /** Category details (productForms.ts): { [fieldKey]: value }, the fields of the category's product form. */
+  details?: Record<string, unknown> | null;
+  /** The product form the values follow (HEALTH, MOTOR_CAR…). Set by the server from the category, never by the client. */
+  form?: string;
 }
 
 const NOT_STATED = 'Not stated by insurer'; // AC-P22-5
@@ -39,10 +44,16 @@ export const effectiveStatus = (p: Pick<ProductDoc, 'status' | 'launchDate'>) =>
   p.status === 'UPCOMING' && p.launchDate && p.launchDate <= istToday() ? 'ACTIVE' : p.status;
 const statusFor = (launch?: string | null) => (launch && launch > istToday() ? 'UPCOMING' : 'ACTIVE');
 
-/** AC-P22-3: a child fits the child band; an adult fits the adult band. */
+/**
+ * AC-P22-3: a child fits the child band; an adult fits the adult band. Category forms: with no entry ages (Motor, Home:
+ * a vehicle or a property is insured) anyone may be the policyholder and nobody is covered as a child; with an adult
+ * band only (Term Life) there is no child cover. Products saved before forms existed have no `form`: as before.
+ */
 export function fitsEntryAge(d: ProductData, age: number, as: 'ADULT' | 'CHILD') {
+  const ages = d.form ? productForm(d.form).entryAges : 'ADULT_CHILD';
+  if (ages === 'NONE') return as === 'ADULT';
   if (as === 'CHILD') {
-    if (!d.coversChildren) return false;
+    if (ages === 'ADULT' || !d.coversChildren) return false;
     const band = cfgRange('CFG-153');
     return age >= (d.childMin ?? band.min) && age <= (d.childMax ?? band.max);
   }
@@ -52,6 +63,36 @@ export function fitsEntryAge(d: ProductData, age: number, as: 'ADULT' | 'CHILD')
 async function activeTemplate(typeId: string) {
   return TemplateVersion.findOne({ typeId, status: 'ACTIVE' }).lean<TemplateDoc>();
 }
+
+/** The category's product form (from the type; GENERIC if the type is gone). */
+export async function formForType(typeId: string): Promise<ProductForm> {
+  return formOfType(await InsuranceType.findById(typeId, { name: 1, productForm: 1 }).lean<{ name: string; productForm?: string | null }>());
+}
+
+/**
+ * Before any save: shape the values to the category's form. Fields the form does not use are cleared (no entry ages
+ * for Motor or Home, no child band for Term Life), the category details are format-checked (field errors) and kept
+ * clean, and the form is stamped on the values so quotations read them the same way later.
+ */
+export async function prepareData(typeId: string, d: ProductData): Promise<ProductData> {
+  const form = await formForType(typeId);
+  const out: ProductData = { ...d, form: form.code };
+  if (form.entryAges === 'NONE') { delete out.adultMin; delete out.adultMax; }
+  if (form.entryAges !== 'ADULT_CHILD') { out.coversChildren = false; out.childMin = null; out.childMax = null; }
+  const { problems, clean } = checkDetails(form, d.details);
+  if (problems.length) throw AppError.fields(problems);
+  out.details = clean;
+  return out;
+}
+
+/** A new draft's values: every feature of the category's template listed (no value yet) and its details form. */
+function blankData(form: ProductForm, tpl: Pick<TemplateDoc, 'features'>): ProductData {
+  return { form: form.code, details: {}, features: Object.fromEntries([...tpl.features].sort((a, b) => a.order - b.order).map((f) => [f.key, { value: null }])) };
+}
+const templateView = (tpl: Pick<TemplateDoc, '_id' | 'number' | 'features'>) => ({
+  id: tpl._id, number: tpl.number,
+  features: [...tpl.features].sort((a, b) => a.order - b.order).map((f) => ({ key: f.key, name: f.name, group: f.group, dataType: f.dataType, requiredToPublish: f.requiredToPublish, order: f.order, help: f.help ?? null })),
+});
 
 /**
  * P-22 checks before save or submit. Field problems (CAT-33, CAT-16, CAT-34, CAT-15) are reported on their field;
@@ -64,7 +105,7 @@ export async function publishCheck(kind: 'VERIFIED' | 'OWN', insurerId: string, 
   const f = (field: string, id: 'CAT-16' | 'CAT-34' | 'CAT-15' | 'CAT-48', params: Record<string, string | number> = {}) => fields.push({ field, messageId: id, params });
   const missing: string[] = [];
   const [insurer, type, tpl, used] = await Promise.all([
-    Insurer.findById(insurerId, { status: 1 }).lean<{ status: string }>(), InsuranceType.findById(typeId, { status: 1, ownerAccountId: 1 }).lean<{ status: string; ownerAccountId?: string | null }>(),
+    Insurer.findById(insurerId, { status: 1 }).lean<{ status: string }>(), InsuranceType.findById(typeId, { status: 1, ownerAccountId: 1, name: 1, productForm: 1 }).lean<{ status: string; ownerAccountId?: string | null; name?: string; productForm?: string | null }>(),
     activeTemplate(typeId), TemplateVersion.findById(templateId).lean<TemplateDoc>(),
   ]);
   if (insurer?.status !== 'ACTIVE') missing.push('an ACTIVE insurer');
@@ -72,18 +113,24 @@ export async function publishCheck(kind: 'VERIFIED' | 'OWN', insurerId: string, 
   if (!tpl || tpl._id !== templateId) missing.push('the current feature template (CAT-28)');
   for (const [k, label] of [['name', 'product name'], ['launchDate', 'launch date'], ['pricingMode', 'pricing mode']] as const) if (!d[k]) missing.push(label);
   if (d.taxPercent === undefined || d.taxPercent === null) missing.push('tax %');
-  if (d.adultMin === undefined || d.adultMax === undefined) missing.push('adult entry ages');
-  else if (d.adultMin > d.adultMax) f('adultMax', 'CAT-16');
-  if (d.coversChildren) {
+  const form = formOfType(type); // category details (productForms.ts)
+  if (form.entryAges !== 'NONE') {
+    if (d.adultMin === undefined || d.adultMin === null || d.adultMax === undefined || d.adultMax === null) missing.push(form.missing.adultEntryAge);
+    else if (d.adultMin > d.adultMax) f('adultMax', 'CAT-16');
+  }
+  if (d.coversChildren && form.entryAges === 'ADULT_CHILD') {
     const band = cfgRange('CFG-153');
     const cmin = d.childMin ?? band.min; const cmax = d.childMax ?? band.max;
     if (cmin < 0 || (d.adultMax !== undefined && cmax > d.adultMax)) f('childMax', 'CAT-34');
     if (cmin > cmax) f('childMax', 'CAT-16');
   }
   const si = d.sumInsured ?? {};
-  if (!(si.options?.length) && !(si.min && si.max)) missing.push('sum insured options or range');
+  if (!(si.options?.length) && !(si.min && si.max)) missing.push(form.missing.sumInsured);
   if (si.min && si.max && si.min > si.max) f('sumInsured.max', 'CAT-16');
-  if (!d.policyTerms?.length) missing.push('policy term options');
+  if (!d.policyTerms?.length) missing.push(form.missing.policyTerms);
+  const det = checkDetails(form, d.details);
+  if (det.problems.length) throw AppError.fields(det.problems);
+  missing.push(...missingDetails(form, det.clean));
   if ((d.addOns?.length ?? 0) > cfgNum('CFG-40')) f('addOns', 'CAT-15', { 'CFG-40': cfgNum('CFG-40') });
   for (const feat of (used ?? tpl)?.features ?? []) {
     if (!feat.requiredToPublish) continue;
@@ -145,6 +192,8 @@ export async function adminGet(id: string) {
     id: p._id, code: p.code, status: effectiveStatus(p), version: p.version, withdrawnReason: p.withdrawnReason,
     insurer: { id: p.insurerId, name: n.ins.get(p.insurerId)?.name }, type: { id: p.typeId, name: n.typ.get(p.typeId)?.name },
     currentTemplateId: tpl?._id ?? null,
+    currentTemplate: tpl ? templateView(tpl) : null, // the category's features
+    form: formView(await formForType(p.typeId)), // the category's product details
     versions: await Promise.all(versions.map(async (v) => ({ ...versionView(v), variants: await variantsOf(v._id) }))), // change #2
   };
 }
@@ -158,11 +207,13 @@ export async function adminCreate(ctx: AuthContext, b: { insurerId: string; type
   try {
     const out = await withTx(async (session) => {
       const [p] = await Product.create([{ kind: 'VERIFIED', insurerId: b.insurerId, typeId: b.typeId, code: b.code, makerId: ctx.userId }], { session: session ?? undefined });
-      const [v] = await ProductVersion.create([{ productId: p!._id, number: 1, templateId: tpl._id, makerId: ctx.userId, data: {} }], { session: session ?? undefined });
+      // The draft starts with every feature of the category's template listed, and the category's details form
+      const [v] = await ProductVersion.create([{ productId: p!._id, number: 1, templateId: tpl._id, makerId: ctx.userId, data: blankData(formOfType(type), tpl) }], { session: session ?? undefined });
       await audit({ entity: 'product', entityId: p!._id, action: 'PRODUCT_CREATED', after: { insurerId: b.insurerId, typeId: b.typeId, code: b.code } }, { req, session });
       return { p: p!, v: v! };
     });
-    return { productId: out.p._id, version: versionView(out.v.toObject() as ProductVersionDoc) };
+    const form = formOfType(type);
+    return { productId: out.p._id, version: versionView(out.v.toObject() as ProductVersionDoc), template: templateView(tpl), productForm: form.code, form: formView(form) };
   } catch (e) {
     if (isDuplicateKey(e, 'verified_code_per_insurer')) throw AppError.field('code', 'CAT-07');
     throw e;
@@ -194,7 +245,10 @@ export async function adminStartEdit(ctx: AuthContext, id: string, req: Request)
 export async function adminSaveDraft(ctx: AuthContext, vid: string, b: { rev: number; data: ProductData }, req: Request) {
   if ((b.data.addOns?.length ?? 0) > cfgNum('CFG-40')) throw AppError.field('addOns', 'CAT-15', { 'CFG-40': cfgNum('CFG-40') });
   if (b.data.customFeatures) b.data.customFeatures = normaliseCustomFeatures(b.data.customFeatures, 'SKYUP');
-  const u = await ProductVersion.findOneAndUpdate({ _id: vid, status: 'DRAFT', rev: b.rev }, { $set: { data: b.data, makerId: ctx.userId, rejectReason: null }, $inc: { rev: 1 } }, { new: true }).lean<ProductVersionDoc>();
+  const cur0 = await ProductVersion.findById(vid, { productId: 1 }).lean<{ productId: string }>();
+  const prod = cur0 ? await Product.findById(cur0.productId, { typeId: 1 }).lean<{ typeId: string }>() : null;
+  const data = prod ? await prepareData(prod.typeId, b.data) : b.data; // category details checked and stamped
+  const u = await ProductVersion.findOneAndUpdate({ _id: vid, status: 'DRAFT', rev: b.rev }, { $set: { data, makerId: ctx.userId, rejectReason: null }, $inc: { rev: 1 } }, { new: true }).lean<ProductVersionDoc>();
   if (!u) {
     const cur = await ProductVersion.findById(vid).lean<ProductVersionDoc>();
     if (!cur) throw AppError.notFound();
@@ -250,8 +304,9 @@ export async function adminSubmit(ctx: AuthContext, vid: string, b: { rev: numbe
   if (v.status !== 'DRAFT') throw AppError.invalidState('product version', v.status.replace('_', ' '));
   const p = await Product.findById(v.productId).lean<ProductDoc>();
   const drafted = (await ProductVariant.find({ productVersionId: vid }).sort({ position: 1 }).lean()).map(asInput);
-  await publishCheck('VERIFIED', p!.insurerId, p!.typeId, v.templateId, v.data as ProductData, p!._id, drafted);
-  const u = await ProductVersion.findOneAndUpdate({ _id: vid, status: 'DRAFT', rev: b.rev }, { $set: { status: 'PENDING_APPROVAL', submittedAt: clock.now(), makerId: ctx.userId }, $inc: { rev: 1 } }, { new: true }).lean<ProductVersionDoc>();
+  const data = await prepareData(p!.typeId, v.data as ProductData); // a draft saved before category forms gets its form now
+  await publishCheck('VERIFIED', p!.insurerId, p!.typeId, v.templateId, data, p!._id, drafted);
+  const u = await ProductVersion.findOneAndUpdate({ _id: vid, status: 'DRAFT', rev: b.rev }, { $set: { status: 'PENDING_APPROVAL', submittedAt: clock.now(), makerId: ctx.userId, data }, $inc: { rev: 1 } }, { new: true }).lean<ProductVersionDoc>();
   if (!u) throw AppError.versionConflict('product version', versionView(v));
   await audit({ entity: 'productVersion', entityId: vid, action: 'PRODUCT_SUBMITTED' }, { req });
   // No admin approval (Q92): publish now through the approval step; a failure returns the version to DRAFT.
@@ -382,6 +437,8 @@ export async function advisorGet(ctx: AuthContext, id: string) {
     variants: v ? await variantsOf(v._id, (d.features ?? {}) as Record<string, FeatureValue>, shown) : [], // change #2
     customFeatures: d.customFeatures ?? [], // change #5
     insurer: n.ins.get(p.insurerId)?.name ?? null, type: n.typ.get(p.typeId)?.name ?? null,
+    // The category's product form: labels for `data.details` and which shared fields apply (the form the values follow)
+    form: formView(d.form ? productForm(d.form) : await formForType(p.typeId)),
     publishedVersion: v ? {
       id: v._id, number: v.number, templateId: v.templateId, data: advisorData((v.data ?? {}) as ProductData),
       // Own products only: the values as the owner typed them, to edit from. `data` shows "Not stated by insurer" as
@@ -401,6 +458,7 @@ export async function ownCreate(ctx: AuthContext, b: { insurerId: string; typeId
   const tpl = await activeTemplate(b.typeId);
   if (!tpl) throw AppError.field('typeId', 'VAL-22');
   if (b.data.customFeatures) b.data.customFeatures = normaliseCustomFeatures(b.data.customFeatures, 'ADVISOR');
+  b.data = await prepareData(b.typeId, b.data); // category details checked and stamped
   await publishCheck('OWN', b.insurerId, b.typeId, tpl._id, b.data, undefined, b.variants ?? []);
   const marks = b.ocrJobId ? await ocrMarksFor(ctx, b.ocrJobId, b.typeId) : {};
   if (b.data.brochureFileId) await assertOwnFile(ctx, b.data.brochureFileId, 'BROCHURE', 'brochureFileId');
@@ -428,6 +486,7 @@ export async function ownEdit(ctx: AuthContext, id: string, b: { version: number
   const tpl = await activeTemplate(p.typeId);
   if (!tpl) throw AppError.invalidState('insurance type', 'without a live template');
   if (b.data.customFeatures) b.data.customFeatures = normaliseCustomFeatures(b.data.customFeatures, 'ADVISOR');
+  b.data = await prepareData(p.typeId, b.data); // category details checked and stamped
   // No variants sent: the live ones carry over (checked against the new values)
   const keep = b.variants === undefined && p.publishedVersionId ? (await ProductVariant.find({ productVersionId: p.publishedVersionId }).sort({ position: 1 }).lean()).map(asInput) : b.variants ?? [];
   await publishCheck('OWN', p.insurerId, p.typeId, tpl._id, b.data, undefined, keep);

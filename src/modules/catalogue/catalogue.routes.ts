@@ -18,6 +18,7 @@ import * as ocr from './ocr.service.js';
 import * as priv from './private.service.js';
 import * as variants from './variants.service.js';
 import { DATA_TYPES, FACTOR_SOURCES, FEATURE_GROUPS } from './types.model.js';
+import { PRODUCT_FORMS, formList } from './productForms.js';
 
 const labels = {
   name: 'Insurer name', shortCode: 'Short code', category: 'Category', irdaiRegNo: 'IRDAI registration number', website: 'Website',
@@ -89,7 +90,7 @@ export function approvalRoutes() {
 }
 
 // ── P-21 insurance types and feature templates ──
-const tplLabels = { name: 'Name', features: 'Features', factors: 'Rating factors', questions: 'Quotation questions', rev: 'Version', reason: 'Reason', version: 'Version' };
+const tplLabels = { name: 'Name', features: 'Features', factors: 'Rating factors', questions: 'Quotation questions', rev: 'Version', reason: 'Reason', version: 'Version', productForm: 'Product details form' };
 const num = z.number({ invalid_type_error: 'VAL-12' }).finite().min(0, { message: 'VAL-12' });
 const templateBody = z.object({
   rev: required(version()),
@@ -112,8 +113,14 @@ export function typeRoutes() {
   const r = Router();
   r.use(authenticate, allow('catalogue.make'));
   r.get('/', async (req, res) => sendData(res, await types.listTypes(req.auth!)));
-  r.post('/', validate({ body: z.object({ name: required(shortText()) }).strict() }, tplLabels), idempotent(), async (req, res) =>
-    sendData(res, await types.createType(req.auth!, req.body.name, req), 201));
+  // The category product forms (HEALTH, MOTOR_CAR, TERM_LIFE…) to choose from when adding or editing a type
+  r.get('/product-forms', async (_req, res) => sendData(res, formList()));
+  r.post('/', validate({ body: z.object({ name: required(shortText()), productForm: optional(enumOf(PRODUCT_FORMS)) }).strict() }, tplLabels), idempotent(), async (req, res) =>
+    sendData(res, await types.createType(req.auth!, req.body.name, req, req.body.productForm ?? null), 201));
+  // + Product, after the category is chosen: its live features (added to the new product) and its product details form
+  r.get('/:id/template', validate({ params: typeId }), async (req, res) => sendData(res, await types.liveFeatures(String(req.params.id))));
+  r.post('/:id/product-form', validate({ params: typeId, body: z.object({ version: required(version()), productForm: required(enumOf(PRODUCT_FORMS)) }).strict() }, tplLabels), async (req, res) =>
+    sendDone(res, await types.setProductForm(req.auth!, String(req.params.id), req.body, req), 'GEN-08', { 'Record type': 'Insurance type' }));
   r.post('/:id/templates', validate({ params: typeId }), async (req, res) => sendData(res, await types.startDraft(req.auth!, String(req.params.id), req), 201));
   r.post('/:id/deactivate', allow('catalogue.approve'), validate({ params: typeId, body: z.object({ version: required(version()), confirm: confirmations() }).strict() }, tplLabels), async (req, res) =>
     sendDone(res, await types.setTypeActive(req.auth!, String(req.params.id), req.body, 'INACTIVE', req), 'GEN-08', { 'Record type': 'Insurance type' }));
@@ -164,6 +171,10 @@ export const productData = z.object({
   pricingMode: enumOf(['RATE_TABLE', 'MANUAL_ENTRY'] as const).optional(), taxPercent: percent().optional(),
   nomineeRequired: z.boolean().optional(), maxNominees: wholeNumber(1, () => cfgNum('CFG-53')).optional(), gracePeriodDays: optional(wholeNumber(0, () => 365)),
   brochureFileId: optional(recordId('fil')), sourceLink: optional(webAddress()), sourceCheckedOn: optional(date()),
+  // Category details (productForms.ts): checked against the category's form in the service
+  // Sent back as read (e.g. from `entered`); ignored: the server sets it from the category on every save
+  form: z.string().max(40).optional(),
+  details: z.record(z.string().max(60), z.union([z.string().max(500), z.number(), z.boolean(), z.null(), z.array(z.union([z.string().max(100), z.number()])).max(50)])).optional(),
   // Change #5: features outside the template (✓/✗ or a short text per variant)
   customFeatures: z.array(z.object({ key: z.string().regex(/^cf_[a-z0-9_]{1,50}$/).optional(), name: required(shortText()), origin: enumOf(['ADVISOR', 'AI_SUGGESTED', 'SKYUP'] as const).optional(), group: optional(shortText()), dataType: enumOf(['Yes/No', 'Text'] as const).optional() }).strict()).max(50).optional(),
 }).strict();
@@ -257,11 +268,12 @@ export function ownProductRoutes() {
   // Read-only lookups for the + My product form: types with a live template, and that template's features.
   r.get('/types', async (req, res) => sendData(res, await types.ownProductTypes(req.auth!.accountId)));
   r.get('/types/:id/template', validate({ params: typeId }), async (req, res) => sendData(res, await types.liveFeatures(String(req.params.id), req.auth!.accountId ?? null)));
+  r.get('/product-forms', async (_req, res) => sendData(res, formList()));
   // Changes #3, #4: step 1 "create a category" and step 2 "add a company", private to this account
   r.get('/insurers', validate({ query: z.object({ q: z.string().max(100).optional() }) }), async (req, res) => sendData(res, await priv.insurerChoices(req.auth!, (res.locals.query as { q?: string }).q)));
   r.post('/insurers', writable, validate({ body: z.object({ name: required(shortText()) }).strict() }, { name: 'Company name' }), idempotent(), async (req, res) =>
     sendDone(res, await priv.addInsurer(req.auth!, req.body, req), 'GEN-08', { 'Record type': 'Company' }, 201));
-  r.post('/types', writable, validate({ body: z.object({ name: required(shortText()) }).strict() }, { name: 'Category name' }), idempotent(), async (req, res) =>
+  r.post('/types', writable, validate({ body: z.object({ name: required(shortText()), productForm: optional(enumOf(PRODUCT_FORMS)) }).strict() }, { name: 'Category name', productForm: 'Product details form' }), idempotent(), async (req, res) =>
     sendDone(res, await priv.addCategory(req.auth!, req.body, req), 'GEN-08', { 'Record type': 'Category' }, 201));
   // Change #6: brochure reading for the advisor (Premium or trial; Normal → CAT-45). Nothing is saved to a product here.
   const jobId = z.object({ id: z.string().regex(/^ocr_[a-f0-9]{28}$/) });

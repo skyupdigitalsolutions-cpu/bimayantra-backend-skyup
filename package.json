@@ -23,6 +23,7 @@
     "db:migrate:life-term": "tsx --env-file=.env src/scripts/migrate-life-term.ts",
     "db:migrate:pending-approvals": "tsx --env-file=.env src/scripts/migrate-pending-approvals.ts",
     "db:migrate:encrypt-pii": "tsx --env-file=.env src/scripts/migrate-encrypt-pii.ts",
+    "catalogue:seed-templates": "tsx --env-file=.env src/scripts/seed-category-templates.ts",
     "start:prod": "node dist/server.js"
   },
   "dependencies": {

@@ -10,6 +10,7 @@ import { audit } from '../audit/audit.service.js';
 import { useStepUp } from '../auth/stepUp.js';
 import type { AuthContext } from '../rbac/capabilities.js';
 import { InsuranceType, TemplateVersion, type InsuranceTypeDoc, type TemplateDoc } from './types.model.js';
+import { formOfType, formView, guessProductForm, type ProductFormCode } from './productForms.js';
 
 type Feature = { key?: string; name: string; group: string; dataType: string; requiredToPublish: boolean; order: number; help?: string | null };
 type Factor = { key?: string; name: string; kind: 'BAND' | 'VALUE'; source: string; bands: Array<{ from: number; to: number }>; values: string[] };
@@ -31,7 +32,7 @@ function withKeys<T extends { key?: string; name?: string; label?: string }>(row
 /** Starting types (CFG-115) exist from the first use; adding one later is + Type. */
 export async function ensureStartingTypes() {
   for (const name of cfgList('CFG-115')) {
-    await InsuranceType.updateOne({ nameKey: name.toLowerCase() }, { $setOnInsert: { name, nameKey: name.toLowerCase(), status: 'ACTIVE' } }, { upsert: true }).catch((e) => { if (!isDuplicateKey(e)) throw e; });
+    await InsuranceType.updateOne({ nameKey: name.toLowerCase() }, { $setOnInsert: { name, nameKey: name.toLowerCase(), status: 'ACTIVE', productForm: guessProductForm(name) } }, { upsert: true }).catch((e) => { if (!isDuplicateKey(e)) throw e; });
   }
 }
 
@@ -52,6 +53,7 @@ export async function listTypes(ctx: AuthContext) {
     const open = tpls.find((v) => v.typeId === t._id && v.isOpen);
     return {
       id: t._id, name: t.name, status: t.status, version: t.version,
+      productForm: formOfType(t).code, productFormSet: !!t.productForm, // false = taken from the name until an admin sets it
       activeTemplate: active ? { id: active._id, number: active.number } : null,
       openTemplate: open ? { id: open._id, number: open.number, status: open.status, mine: open.makerId === ctx.userId, rejectReason: open.rejectReason } : null,
     };
@@ -64,13 +66,28 @@ export async function getTemplate(ctx: AuthContext, id: string) {
   return tplView(t, ctx);
 }
 
-/** + Type: the type (ACTIVE) and an empty DRAFT template (P-21 step 2). */
-export async function createType(ctx: AuthContext, name: string, req: Request) {
+/** + Type: the type (ACTIVE) and an empty DRAFT template (P-21 step 2). The product form defaults from the name. */
+export async function createType(ctx: AuthContext, name: string, req: Request, productForm?: ProductFormCode | null) {
   if (await InsuranceType.exists({ nameKey: name.toLowerCase(), ownerAccountId: null })) throw AppError.invalidState('insurance type', 'already in the catalogue');
-  const t = await InsuranceType.create({ name, nameKey: name.toLowerCase() });
+  const form = productForm ?? guessProductForm(name);
+  const t = await InsuranceType.create({ name, nameKey: name.toLowerCase(), productForm: form });
   const draft = await TemplateVersion.create({ typeId: t._id, number: 1, makerId: ctx.userId });
-  await audit({ entity: 'insuranceType', entityId: t._id, action: 'INSURANCE_TYPE_CREATED', after: { name } }, { req });
-  return { type: { id: t._id, name: t.name, status: t.status }, template: tplView(draft.toObject() as TemplateDoc, ctx) };
+  await audit({ entity: 'insuranceType', entityId: t._id, action: 'INSURANCE_TYPE_CREATED', after: { name, productForm: form } }, { req });
+  return { type: { id: t._id, name: t.name, status: t.status, productForm: form, version: t.version }, template: tplView(draft.toObject() as TemplateDoc, ctx) };
+}
+
+/**
+ * Set which category details a SkyUp type's products carry. Products already published keep the details they have;
+ * the new form's fields are asked for on each product's next edit (like a new template version, CAT-28).
+ */
+export async function setProductForm(ctx: AuthContext, id: string, b: { version: number; productForm: ProductFormCode }, req: Request) {
+  const t = await InsuranceType.findOne({ _id: id, ownerAccountId: null }).lean<InsuranceTypeDoc>();
+  if (!t) throw AppError.notFound();
+  const before = formOfType(t).code;
+  const u = await InsuranceType.findOneAndUpdate({ _id: id, version: b.version }, { $set: { productForm: b.productForm }, $inc: { version: 1 } }, { new: true }).lean<InsuranceTypeDoc>();
+  if (!u) throw AppError.versionConflict('insurance type', { id: t._id, name: t.name, productForm: before, version: t.version });
+  await audit({ entity: 'insuranceType', entityId: id, action: 'INSURANCE_TYPE_FORM_CHANGED', before: { productForm: before }, after: { productForm: b.productForm } }, { req });
+  return { id: u._id, name: u.name, status: u.status, productForm: b.productForm, version: u.version, form: formView(formOfType(u)) };
 }
 
 /** Edit template: a new DRAFT copied from the ACTIVE version. One open version per type (CAT-08). */
@@ -217,19 +234,23 @@ export async function setTypeActive(ctx: AuthContext, id: string, b: { version: 
 export async function ownProductTypes(accountId?: string | null) {
   const [types, live] = await Promise.all([
     // Change #4: SkyUp's categories and this account's private ones
-    InsuranceType.find({ status: 'ACTIVE', ownerAccountId: { $in: [null, ...(accountId ? [accountId] : [])] } }, { name: 1, ownerAccountId: 1 }).sort({ name: 1 }).lean<Array<Pick<InsuranceTypeDoc, '_id' | 'name' | 'ownerAccountId'>>>(),
+    InsuranceType.find({ status: 'ACTIVE', ownerAccountId: { $in: [null, ...(accountId ? [accountId] : [])] } }, { name: 1, ownerAccountId: 1, productForm: 1 }).sort({ name: 1 }).lean<Array<Pick<InsuranceTypeDoc, '_id' | 'name' | 'ownerAccountId' | 'productForm'>>>(),
     TemplateVersion.find({ status: 'ACTIVE' }, { typeId: 1, number: 1 }).lean<Array<Pick<TemplateDoc, '_id' | 'typeId' | 'number'>>>(),
   ]);
   const byType = new Map(live.map((t) => [t.typeId, t]));
   return types.flatMap((t) => {
     const tpl = byType.get(t._id);
-    return tpl ? [{ id: t._id, name: t.name, private: !!t.ownerAccountId, template: { id: tpl._id, number: tpl.number } }] : [];
+    return tpl ? [{ id: t._id, name: t.name, private: !!t.ownerAccountId, productForm: formOfType(t).code, template: { id: tpl._id, number: tpl.number } }] : [];
   });
 }
 
-/** The live template's features for one type, in display order: the values an own product records. */
+/**
+ * Everything a + Product form needs once a category is chosen: the live template's features, in display order (the
+ * values the product records), and the category's product form (which product details to show and check).
+ * Used by advisors (+ My product, accountId given) and SkyUp (+ Product, no accountId: every library type).
+ */
 export async function liveFeatures(typeId: string, accountId?: string | null) {
-  const type = await InsuranceType.findById(typeId, { name: 1, status: 1, ownerAccountId: 1 }).lean<Pick<InsuranceTypeDoc, '_id' | 'name' | 'status' | 'ownerAccountId'>>();
+  const type = await InsuranceType.findById(typeId, { name: 1, status: 1, ownerAccountId: 1, productForm: 1 }).lean<Pick<InsuranceTypeDoc, '_id' | 'name' | 'status' | 'ownerAccountId' | 'productForm'>>();
   // An advisor sees SkyUp's categories and their own; another account's private category does not exist for them
   if (!type || (accountId !== undefined && type.ownerAccountId && type.ownerAccountId !== accountId)) throw AppError.notFound();
   if (type.status !== 'ACTIVE') throw AppError.invalidState('insurance type', type.status);
@@ -238,7 +259,8 @@ export async function liveFeatures(typeId: string, accountId?: string | null) {
   const features = [...tpl.features]
     .sort((a, b) => a.order - b.order)
     .map((f) => ({ key: f.key, name: f.name, group: f.group, dataType: f.dataType, requiredToPublish: f.requiredToPublish, order: f.order, help: f.help ?? null }));
-  return { typeId: type._id, typeName: type.name, private: !!type.ownerAccountId, template: { id: tpl._id, number: tpl.number }, features };
+  const form = formOfType(type);
+  return { typeId: type._id, typeName: type.name, private: !!type.ownerAccountId, template: { id: tpl._id, number: tpl.number }, features, productForm: form.code, form: formView(form) };
 }
 
 /** Approvals queue entries for templates. */
