@@ -46,9 +46,9 @@ export const msisdn = (mobile: string) => {
 /* ───────────────────────── SMS ───────────────────────── */
 
 /** OTP via MSG91's OTP API, with our code and validity. The DLT template (with ##OTP##) is chosen in MSG91. */
-export async function sendOtp(mobile: string, code: string, validMinutes: number) {
+export async function sendOtp(mobile: string, code: string, validMinutes: number, name = 'Customer') {
   const q = new URLSearchParams({ template_id: env.MSG91_OTP_TEMPLATE_ID ?? '', mobile: msisdn(mobile), otp: code, otp_expiry: String(validMinutes) });
-  const r = await call<{ request_id?: string; message?: string }>('POST', `/otp?${q.toString()}`, {});
+  const r = await call<{ request_id?: string; message?: string }>('POST', `/otp?${q.toString()}`, { name });
   return { id: String(r.request_id ?? r.message ?? '') };
 }
 
