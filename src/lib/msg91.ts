@@ -45,10 +45,23 @@ export const msisdn = (mobile: string) => {
 
 /* ───────────────────────── SMS ───────────────────────── */
 
-/** OTP via MSG91's OTP API, with our code and validity. The DLT template (with ##OTP##) is chosen in MSG91. */
-export async function sendOtp(mobile: string, code: string, validMinutes: number, name = 'Customer') {
-  const q = new URLSearchParams({ template_id: env.MSG91_OTP_TEMPLATE_ID ?? '', mobile: msisdn(mobile), otp: code, otp_expiry: String(validMinutes) });
-  const r = await call<{ request_id?: string; message?: string }>('POST', `/otp?${q.toString()}`, { name });
+/**
+ * OTP through the SMS (Flow) API with the DLT-verified SMS template MSG91_OTP_TEMPLATE_ID (MSG91 → SMS → Templates),
+ * whose text has the variables ##otp## and ##name##, for example
+ * "Dear ##name##, your OTP for Skyup login is ##otp##. Valid for 10 min…". We still create, hash and check the code.
+ * (MSG91's separate OTP API only accepts templates made in its OTP section; it answers "success" for an SMS template ID
+ * and then drops the message without any log, which is how codes silently went missing.)
+ * realTimeResponse=1: MSG91 answers with the real outcome, so a bad template or DLT problem is an error here (AUTH-13)
+ * instead of a "sent" screen with no SMS. Variable names are case-sensitive and must match the template.
+ */
+export async function sendOtp(mobile: string, code: string, name: string) {
+  const r = await call<{ request_id?: string; message?: string }>('POST', '/flow', {
+    template_id: env.MSG91_OTP_TEMPLATE_ID ?? '',
+    short_url: '0',
+    realTimeResponse: '1',
+    // DLT variables are short (30 characters is the common limit): a long name must not get the SMS rejected.
+    recipients: [{ mobiles: msisdn(mobile), otp: code, name: (name.trim() || 'User').slice(0, 30) }],
+  });
   return { id: String(r.request_id ?? r.message ?? '') };
 }
 

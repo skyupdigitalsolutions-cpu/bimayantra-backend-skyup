@@ -1,5 +1,5 @@
 /**
- * MSG91 with the network stubbed: OTP SMS through the OTP API (our own code), and WhatsApp template messages
+ * MSG91 with the network stubbed: OTP SMS through the SMS (Flow) API with the DLT template (our own code), and WhatsApp template messages
  * (template registration at MSG91, waiting for Meta's approval, sending with body_1…n, delivery webhook, STOP).
  */
 import request from 'supertest';
@@ -12,6 +12,8 @@ import { Consent, Customer } from '../src/modules/customers/customer.model.js';
 import { MessageTemplate, Outbox } from '../src/modules/comms/outbox.model.js';
 import { ensureSystemTemplates, resetSeeded, sendDue, syncWhatsAppTemplates } from '../src/modules/comms/comms.service.js';
 import { templateNameFor, toMetaBody, variablesOf } from '../src/lib/msg91.js';
+import { normalizeMobile } from '../src/lib/phone.js';
+import { User } from '../src/modules/users/user.model.js';
 
 const E = env as unknown as Record<string, unknown>;
 const saved = { ...E };
@@ -37,19 +39,29 @@ function net(handler: (c: Call) => { status?: number; body: unknown } | undefine
 const atIST = (h: number) => { const ist = new Date(Date.now() + 5.5 * 3_600_000); const target = Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate(), h, 0) - 5.5 * 3_600_000; clock.setOffset(target - Date.now()); };
 
 describe('MSG91 SMS', () => {
-  it('the OTP goes through the OTP API with our own code and validity; that code signs the person in', async () => {
-    const calls = net((c) => (c.url.includes('/api/v5/otp?') ? { body: { type: 'success', request_id: 'req-otp-1' } } : undefined));
+  it('the OTP goes through the SMS (Flow) API with the DLT template, our own code and the name; that code signs the person in', async () => {
+    const calls = net((c) => (c.url.endsWith('/api/v5/flow') ? { body: { type: 'success', message: 'req-otp-1' } } : undefined));
     const mobile = newMobile();
     const send = await request(app).post('/v1/auth/register/otp').send({ name: 'Ravi Kumar', mobile, termsAccepted: true });
     expect(send.status).toBe(200);
-    const u = new URL(calls[0]!.url);
-    expect(calls[0]!.headers).toMatchObject({ authkey: 'msg91-key' });
-    expect(u.searchParams.get('template_id')).toBe('otp-tpl-1');
-    expect(u.searchParams.get('mobile')).toBe(`91${mobile}`);
-    const code = u.searchParams.get('otp')!;
+    expect(calls[0]).toMatchObject({ method: 'POST', headers: { authkey: 'msg91-key' } });
+    // realTimeResponse: the real outcome, not MSG91's "accepted" (an unusable template is otherwise dropped silently).
+    const body = calls[0]!.body as { template_id: string; realTimeResponse: string; recipients: Array<Record<string, string>> };
+    expect(body).toMatchObject({ template_id: 'otp-tpl-1', realTimeResponse: '1' });
+    expect(body.recipients).toHaveLength(1);
+    expect(body.recipients[0]).toMatchObject({ mobiles: `91${mobile}`, name: 'Ravi Kumar' });
+    const code = body.recipients[0]!.otp!;
     expect(code).toMatch(/^\d{4,8}$/);
     const r = await request(app).post('/v1/auth/register/verify').set('X-Client', 'app').set('Idempotency-Key', key()).send({ mobile, code });
     expect(r.status).toBe(201);
+  });
+
+  it('a login code greets the user by their saved name', async () => {
+    const mobile = newMobile();
+    await User.create({ accountId: null, role: 'ADM', name: 'Asha Rao', mobile: normalizeMobile(mobile), status: 'ACTIVE', activatedAt: new Date() });
+    const calls = net((c) => (c.url.endsWith('/api/v5/flow') ? { body: { type: 'success', message: 'req-otp-2' } } : undefined));
+    expect((await request(app).post('/v1/auth/login/otp').send({ mobile })).status).toBe(200);
+    expect((calls[0]!.body as { recipients: Array<Record<string, string>> }).recipients[0]).toMatchObject({ name: 'Asha Rao', mobiles: `91${mobile}` });
   });
 
   it('an MSG91 error is AUTH-13 (no code was sent), not a crash', async () => {

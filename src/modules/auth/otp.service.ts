@@ -10,6 +10,7 @@ import { msg, type MessageId, type MessageParams } from '../../lib/messages.js';
 import { maskMobile } from '../../lib/phone.js';
 import { audit } from '../audit/audit.service.js';
 import type { AuthContext } from '../rbac/capabilities.js';
+import { User } from '../users/user.model.js';
 import { OtpChallenge, OtpGrant, OtpLock, type OtpChallengeDoc, type OtpPurpose } from './otp.model.js';
 import { sendSms } from './sms.js';
 
@@ -93,9 +94,11 @@ export async function issueOtp(
     return { ...result(false, { issuedAt: now, expiresAt: new Date(now.getTime() + minutes(cfgNum('CFG-02'))) }, 'AUTH-05', {}), message: msg('AUTH-05', { seconds: cfgNum('CFG-04') }) };
   }
 
+  // "Dear ##name##" in the DLT template: the name typed at sign-up, otherwise the user's own name.
+  const name = input.pendingName ?? (input.userId ? (await User.findById(input.userId, { name: 1 }).lean())?.name : null) ?? '';
   try {
     await Promise.race([
-      sendSms(mobile, 'OTP', `${code} is your Bimayantra verification code. It is valid for ${cfgNum('CFG-02')} minutes. Do not share it with anyone.`, { code, minutes: String(cfgNum('CFG-02')) }),
+      sendSms(mobile, 'OTP', `${code} is your Bimayantra verification code. It is valid for ${cfgNum('CFG-02')} minutes. Do not share it with anyone.`, { code, minutes: String(cfgNum('CFG-02')), name }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('SMS provider timeout')), 5_000)),
     ]);
   } catch (err) {
