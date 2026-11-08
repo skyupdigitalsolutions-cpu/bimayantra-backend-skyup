@@ -290,6 +290,7 @@ export const MESSAGES = {
   'OCR-06': '{n} values applied to the draft.',
   'OCR-07': 'Reading brochures is switched off. Enter values by hand.',
   'OCR-08': 'This value was not found in the brochure. Mark it Not stated, or type it from another source.',
+  'OCR-09': 'This brochure looks like a {detected} insurance brochure, but the category chosen is {chosen}. Choose the right category, or upload a {chosen} brochure.',
   'CAT-16': 'Minimum must not be more than maximum.',
   // ── Stage F: catalogue [NOT IN BPD YET: add to Section 21] (changes #2 to #6) ──
   'CAT-45': 'Reading brochures is part of the Premium plan. Upgrade to have the details filled in for you.',

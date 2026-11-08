@@ -230,8 +230,9 @@ export function productVersionRoutes() {
     sendDone(res, out.version, 'CAT-03', out.params);
   });
   // P-23 brochure reading on a DRAFT version
-  r.post('/:id/ocr', validate({ params: pvId, body: z.object({ fileId: required(recordId('fil')) }).strict() }, { fileId: 'Brochure' }), async (req, res) =>
-    sendDone(res, await ocr.start(req.auth!, String(req.params.id), req.body.fileId, req), 'OCR-01', { 'CFG-38': cfgNum('CFG-38') }, 202));
+  // ignoreCategoryCheck: read it anyway after a WRONG_CATEGORY result (OCR-09) the reviewer knows is wrong
+  r.post('/:id/ocr', validate({ params: pvId, body: z.object({ fileId: required(recordId('fil')), ignoreCategoryCheck: z.boolean().optional() }).strict() }, { fileId: 'Brochure' }), async (req, res) =>
+    sendDone(res, await ocr.start(req.auth!, String(req.params.id), req.body.fileId, req, { ignoreCategoryCheck: req.body.ignoreCategoryCheck }), 'OCR-01', { 'CFG-38': cfgNum('CFG-38') }, 202));
   r.get('/:id/ocr', validate({ params: pvId }), async (req, res) => sendData(res, await ocr.latest(String(req.params.id))));
   r.post('/:id/reject', allow('catalogue.approve'), requireStepUp, validate({ params: pvId, body: z.object({ rev: required(version()), reason: required(shortText()) }).strict() }, prodLabels), async (req, res) => {
     const out = await products.adminReject(req.auth!, String(req.params.id), req.body, req);
@@ -277,8 +278,8 @@ export function ownProductRoutes() {
     sendDone(res, await priv.addCategory(req.auth!, req.body, req), 'GEN-08', { 'Record type': 'Category' }, 201));
   // Change #6: brochure reading for the advisor (Premium or trial; Normal → CAT-45). Nothing is saved to a product here.
   const jobId = z.object({ id: z.string().regex(/^ocr_[a-f0-9]{28}$/) });
-  r.post('/brochure-reading', writable, validate({ body: z.object({ typeId: required(z.string().regex(/^typ_[a-f0-9]{28}$/)), fileId: required(recordId('fil')) }).strict() }, { typeId: 'Category', fileId: 'Brochure' }), async (req, res) =>
-    sendDone(res, await ocr.advisorStart(req.auth!, req.body.typeId, req.body.fileId, req), 'OCR-01', { 'CFG-38': cfgNum('CFG-38') }, 202));
+  r.post('/brochure-reading', writable, validate({ body: z.object({ typeId: required(z.string().regex(/^typ_[a-f0-9]{28}$/)), fileId: required(recordId('fil')), ignoreCategoryCheck: z.boolean().optional() }).strict() }, { typeId: 'Category', fileId: 'Brochure' }), async (req, res) =>
+    sendDone(res, await ocr.advisorStart(req.auth!, req.body.typeId, req.body.fileId, req, { ignoreCategoryCheck: req.body.ignoreCategoryCheck }), 'OCR-01', { 'CFG-38': cfgNum('CFG-38') }, 202));
   r.get('/brochure-reading/:id', validate({ params: jobId }), async (req, res) => sendData(res, await ocr.advisorJob(req.auth!, String(req.params.id))));
   r.put('/brochure-reading/:id/decisions', writable, validate({ params: jobId, body: decisionsBody }), async (req, res) => sendData(res, await ocr.decideAny(req.auth!, String(req.params.id), req.body.decisions)));
   r.post('/brochure-reading/:id/accept-high', writable, validate({ params: jobId }), async (req, res) => sendData(res, await ocr.acceptHighAny(req.auth!, String(req.params.id))));

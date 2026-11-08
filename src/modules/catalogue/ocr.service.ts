@@ -5,13 +5,16 @@ import { clock } from '../../lib/clock.js';
 import { AppError } from '../../lib/errors.js';
 import { newId } from '../../lib/ids.js';
 import { logger } from '../../lib/logger.js';
+import { msg } from '../../lib/messages.js';
 import { audit } from '../audit/audit.service.js';
 import { ocrPages, readerEnabled } from '../documents/reader.js';
 import { assertOwnFile, open as openFile } from '../files/files.service.js';
 import { notify } from '../notifications/notifications.service.js';
 import type { AuthContext } from '../rbac/capabilities.js';
-import { ProductVersion, type ProductVersionDoc } from './product.model.js';
-import { TemplateVersion, type TemplateDoc } from './types.model.js';
+import { Product, ProductVersion, type ProductVersionDoc } from './product.model.js';
+import { InsuranceType, TemplateVersion, type TemplateDoc } from './types.model.js';
+import { categoryMismatch, detectCategory } from './brochureCategory.js';
+import { formOfType, productForm, type DetailField, type ProductForm } from './productForms.js';
 
 /**
  * P-23 brochure reading. A job reads the brochure and SUGGESTS a value per template feature; nothing reaches the draft
@@ -39,7 +42,18 @@ const jobSchema = new Schema(
     versionId: { type: String, default: null }, // SKYUP only
     productId: { type: String, default: null }, // SKYUP only
     fileId: { type: String, required: true },
-    status: { type: String, enum: ['QUEUED', 'PROCESSING', 'REVIEW_REQUIRED', 'REVIEWED', 'FAILED'], default: 'QUEUED' },
+    /**
+     * WRONG_CATEGORY: the brochure clearly describes another kind of insurance than the chosen category (OCR-09); nothing
+     * is offered for review. Choose the right category, upload the right brochure, or start again with
+     * ignoreCategoryCheck if the call is wrong.
+     */
+    status: { type: String, enum: ['QUEUED', 'PROCESSING', 'REVIEW_REQUIRED', 'REVIEWED', 'FAILED', 'WRONG_CATEGORY'], default: 'QUEUED' },
+    /** The chosen category's product form and name, when the job started (productForms.ts). */
+    form: { type: String, default: null },
+    categoryName: { type: String, default: null },
+    ignoreCategoryCheck: { type: Boolean, default: false },
+    /** What the brochure looks like (brochureCategory.ts), kept on every job. */
+    detected: { type: new Schema({ form: String, label: String, scores: Schema.Types.Mixed }, { _id: false }), default: null },
     startedBy: { type: String, required: true },
     startedAt: { type: Date, required: true },
     rows: { type: [row], default: [] },
@@ -109,8 +123,11 @@ export function matchFeatures(features: Feature[], pages: Page[]) {
 const threshold = () => cfgNum('CFG-37') / 100;
 const flagged = (r: { found: boolean; confidence: number }) => !r.found || r.confidence < threshold();
 const flaggedDetail = (r: { value?: string | null; confidence?: number | null }) => !r.value || (r.confidence ?? 0) < threshold();
+const mismatchParams = (j: Pick<JobDoc, 'detected' | 'categoryName'>) => ({ detected: j.detected?.label ?? 'another', chosen: j.categoryName ?? 'the chosen' });
 const view = (j: JobDoc) => ({
   id: j._id, kind: j.kind ?? 'SKYUP', versionId: j.versionId, typeId: j.typeId ?? null, fileId: j.fileId, status: j.status, startedAt: j.startedAt, error: j.error, applied: j.applied, threshold: cfgNum('CFG-37'),
+  category: { form: j.form ?? null, name: j.categoryName ?? null }, detectedCategory: j.detected ? { form: j.detected.form ?? null, label: j.detected.label ?? null } : null,
+  ...(j.status === 'WRONG_CATEGORY' ? { messageId: 'OCR-09', message: msg('OCR-09', mismatchParams(j)) } : {}),
   rows: j.rows.map((r) => ({ ...r, flagged: flagged(r), ...(r.found ? {} : { messageId: 'OCR-08' }) })),
   details: (j.details ?? []).map((r) => ({ ...r, flagged: flaggedDetail(r) })),
   variants: (j.variants ?? []).map((r) => ({ ...r, flagged: flaggedDetail(r) })),
@@ -132,7 +149,7 @@ async function draftOf(vid: string) {
 }
 
 /** Brochure → Read with OCR (OCR-01). Running it again on the same file reuses the open job. */
-export async function start(ctx: AuthContext, vid: string, fileId: string, req: Request) {
+export async function start(ctx: AuthContext, vid: string, fileId: string, req: Request, opts: { ignoreCategoryCheck?: boolean } = {}) {
   if (!cfgBool('CFG-102') || !readerEnabled()) throw new AppError(409, 'INVALID_STATE', 'OCR-07');
   const v = await draftOf(vid);
   await assertOwnFile(ctx, fileId, 'BROCHURE', 'fileId');
@@ -140,7 +157,9 @@ export async function start(ctx: AuthContext, vid: string, fileId: string, req: 
   if (open) return view(open);
   const { file, bytes } = await openFile(ctx, fileId, req);
   if (pageCount(bytes, file.mime) > cfgNum('CFG-30')) throw AppError.field('fileId', 'OCR-04', { 'CFG-30': cfgNum('CFG-30') }); // AC-P23-4
-  const job = await OcrJob.create({ versionId: vid, productId: v.productId, fileId, startedBy: ctx.userId, startedAt: clock.now() });
+  const p = await Product.findById(v.productId, { typeId: 1 }).lean<{ typeId: string }>();
+  const cat = await categoryOf(p?.typeId ?? null);
+  const job = await OcrJob.create({ versionId: vid, productId: v.productId, fileId, startedBy: ctx.userId, startedAt: clock.now(), ...cat, ignoreCategoryCheck: !!opts.ignoreCategoryCheck });
   await audit({ entity: 'ocrJob', entityId: job._id, action: 'OCR_STARTED', after: { versionId: vid, fileId } }, { req });
   run(job._id, v.templateId, bytes, file.mime, ctx);
   return view(job.toObject() as JobDoc);
@@ -150,7 +169,8 @@ export async function start(ctx: AuthContext, vid: string, fileId: string, req: 
 export async function retry(ctx: AuthContext, jobId: string, req: Request) {
   const j = await OcrJob.findById(jobId).lean<JobDoc>();
   if (!j) throw AppError.notFound();
-  if (j.status !== 'FAILED') throw AppError.invalidState('OCR job', j.status);
+  // A brochure of another category is not read again as it is: start a new reading (ignoreCategoryCheck to override)
+  if (j.status !== 'FAILED') throw AppError.invalidState('OCR job', j.status === 'WRONG_CATEGORY' ? 'WRONG CATEGORY' : j.status);
   if (j.kind === 'ADVISOR') { if (j.accountId !== ctx.accountId) throw AppError.notFound(); return advisorStart(ctx, j.typeId!, j.fileId, req); }
   if (ctx.accountId) throw AppError.notFound();
   return start(ctx, j.versionId!, j.fileId, req);
@@ -159,14 +179,27 @@ export async function retry(ctx: AuthContext, jobId: string, req: Request) {
 /** The background job (GR-26): never awaited by the request; CFG-38 limit; failure leaves the draft unchanged. */
 function run(jobId: string, templateId: string, bytes: Buffer, mime: string, ctx: AuthContext) {
   void (async () => {
-    const tell = (messageId: 'OCR-02' | 'OCR-03', params = {}) => notify({ userId: ctx.userId, accountId: null, kind: messageId === 'OCR-02' ? 'OCR_DONE' : 'OCR_FAILED', messageId, params, dedupeKey: `${messageId}|${jobId}` }).catch(() => undefined);
+    const tell = (messageId: 'OCR-02' | 'OCR-03' | 'OCR-09', params = {}) => notify({ userId: ctx.userId, accountId: null, kind: messageId === 'OCR-02' ? 'OCR_DONE' : 'OCR_FAILED', messageId, params, dedupeKey: `${messageId}|${jobId}` }).catch(() => undefined);
     try {
       await OcrJob.updateOne({ _id: jobId }, { $set: { status: 'PROCESSING' } });
       const limit = new Promise<never>((_, fail) => setTimeout(() => fail(new Error('OCR time limit (CFG-38) reached')), cfgNum('CFG-38') * 60_000).unref());
       const read = await Promise.race([ocrPages(bytes, mime), limit]);
+      // Is this brochure for the chosen category at all? (client requirement: a Motor brochure on a Health product is refused)
+      const job = await OcrJob.findById(jobId, { form: 1, categoryName: 1, ignoreCategoryCheck: 1 }).lean<Pick<JobDoc, 'form' | 'categoryName' | 'ignoreCategoryCheck'>>();
+      const looks = detectCategory(read.text);
+      const detected = looks.family ? { form: looks.form, label: looks.label, scores: looks.scores } : null;
+      const wrong = job?.form && !job.ignoreCategoryCheck ? categoryMismatch(job.form as never, read.text) : null;
+      if (wrong) {
+        const mismatch = { form: wrong.form, label: wrong.label, scores: wrong.scores };
+        await OcrJob.updateOne({ _id: jobId }, { $set: { detected: mismatch, rawText: read.text, error: msg('OCR-09', mismatchParams({ detected: mismatch, categoryName: job!.categoryName })) } });
+        await tell('OCR-09', mismatchParams({ detected: mismatch, categoryName: job!.categoryName })); // the bell item first, then the status
+        await OcrJob.updateOne({ _id: jobId }, { $set: { status: 'WRONG_CATEGORY' } });
+        return;
+      }
       const tpl = await TemplateVersion.findById(templateId, { features: 1 }).lean<TemplateDoc>();
       const rows = matchFeatures(tpl?.features ?? [], read.pages);
-      const extra = { details: readDetails(read.pages), variants: readVariantNames(read.pages), suggestions: suggestFeatures(read.pages, tpl?.features ?? []) };
+      const form = productForm(job?.form);
+      const extra = { details: [...readDetails(read.pages, form), ...readFormDetails(form, read.pages)], variants: readVariantNames(read.pages), suggestions: suggestFeatures(read.pages, tpl?.features ?? []), detected };
       // The bell item first, then the status: whoever sees REVIEW_REQUIRED can already find OCR-02 in the bell.
       await OcrJob.updateOne({ _id: jobId }, { $set: { rows, ...extra, rawText: read.text } });
       await tell('OCR-02', { n: rows.filter((r) => r.found).length, m: rows.filter(flagged).length });
@@ -205,6 +238,13 @@ export async function decide(ctx: AuthContext, jobId: string, decisions: Decisio
     return { ...r, decision: d.decision, editedValue: d.decision === 'EDIT' ? d.value!.trim() : null };
   });
   const details = other('DETAIL', j.details ?? []); const variants = other('VARIANT', j.variants ?? []); const suggestions = other('SUGGESTION', j.suggestions ?? []);
+  // A typed category detail must be a value its field accepts (an option from the list, a number…)
+  const form = productForm(j.form);
+  for (const r of details) {
+    if (r.decision !== 'EDIT' || !r.key?.startsWith('details.')) continue;
+    const f = form.fields.find((x) => `details.${x.key}` === r.key);
+    if (!f || detailValue(f, r.editedValue ?? '') === undefined) throw AppError.field(`detail.${r.key}`, 'VAL-22');
+  }
   await OcrJob.updateOne({ _id: jobId, status: 'REVIEW_REQUIRED' }, { $set: { rows, details, variants, suggestions } });
   return view({ ...j, rows, details, variants, suggestions } as JobDoc);
 }
@@ -250,7 +290,11 @@ export async function apply(ctx: AuthContext, jobId: string, req: Request) {
   }
   // Change #6: accepted product details and ticked suggested features go into the draft too
   const out = decidedResult(j);
-  for (const [k, val] of Object.entries(out.data)) { if (k !== 'features') { set[`data.${k}`] = val; n++; } }
+  for (const [k, val] of Object.entries(out.data)) {
+    if (k === 'features') continue;
+    if (k === 'details') { for (const [dk, dv] of Object.entries(val as Record<string, unknown>)) { set[`data.details.${dk}`] = dv; n++; } continue; } // merged, not replaced
+    set[`data.${k}`] = val; n++;
+  }
   if (out.customFeatures.length) {
     const existing = ((v.data as { customFeatures?: Array<{ key: string }> }).customFeatures ?? []);
     set['data.customFeatures'] = [...existing, ...out.customFeatures.filter((c) => !existing.some((e) => e.key === c.key))];
@@ -285,15 +329,20 @@ export function rupeesIn(text: string): number[] {
 }
 
 /** Product details on the brochure. Each value is a suggestion with the page and a confidence; nothing is trusted. */
-export function readDetails(pages: Page[]): Row[] {
+export function readDetails(pages: Page[], form?: ProductForm): Row[] {
   const rows: Row[] = [];
   const first = <T>(fn: (line: string, pg: Page) => T | null) => { for (const pg of pages) for (const line of pg.text.split(/\r?\n/)) { const v = fn(line, pg); if (v !== null) return { v, pg }; } return null; };
   const uin = first((l) => /\b([A-Z]{3,8}[A-Z0-9]{3,}V\d{6})\b/.exec(l.toUpperCase())?.[1] ?? null);
   if (uin) rows.push(mk('uin', 'IRDAI product UIN', uin.v, uin.pg.confidence, uin.pg.number));
   const name = first((l) => { const t = l.trim(); return t.length >= 4 && t.length <= 60 && /\b(plan|policy|insurance|shield|care|health|cover)\b/i.test(t) && !/[:₹%]|\d{3,}/.test(t) ? t.replace(/\s+/g, ' ') : null; });
   if (name) rows.push(mk('name', 'Product name', name.v, name.pg.confidence * 0.6, name.pg.number)); // a guess from a heading: always checked
-  const si = first((l) => (/sum (?:insured|assured)/i.test(l) && rupeesIn(l).length ? rupeesIn(l) : null));
-  if (si) rows.push(mk('sumInsuredOptions', 'Sum insured options', si.v.sort((a, b) => a - b).join(', '), si.pg.confidence * 0.9, si.pg.number));
+  const si = first((l) => (/sum (?:insured|assured)|\bidv\b|insured declared value/i.test(l) && rupeesIn(l).length ? rupeesIn(l) : null));
+  if (si) rows.push(mk('sumInsuredOptions', `${form?.labels.sumInsured ?? 'Sum insured'} options`, si.v.sort((a, b) => a - b).join(', '), si.pg.confidence * 0.9, si.pg.number));
+  if (form?.entryAges === 'NONE') { // a vehicle or a property is insured: no entry ages to read
+    const t = first((l) => { const m = /policy (?:term|tenure|period)[^\d]*((?:\d{1,2}\s*(?:,|or|and|\/|-|–)?\s*)+)\s*years?/i.exec(l); return m ? [...new Set(m[1]!.match(/\d{1,2}/g)!.map(Number))].filter((n) => n >= 1 && n <= 30) : null; });
+    if (t?.v.length) rows.push(mk('policyTerms', form.labels.policyTerms, t.v.join(', '), t.pg.confidence * 0.85, t.pg.number));
+    return rows;
+  }
   const ages = first((l) => { const m = /entry age[^\d]*(\d{1,2})\s*(?:days?|months?|years?|yrs?)?\s*(?:to|-|–|and)\s*(\d{2,3})/i.exec(l); return m ? [m[1]!, m[2]!] : null; });
   if (ages) { rows.push(mk('adultMin', 'Adult minimum entry age', ages.v[0]!, ages.pg.confidence * 0.9, ages.pg.number)); rows.push(mk('adultMax', 'Adult maximum entry age', ages.v[1]!, ages.pg.confidence * 0.9, ages.pg.number)); }
   const terms = first((l) => { const m = /policy (?:term|tenure|period)[^\d]*((?:\d{1,2}\s*(?:,|or|and|\/|-|–)?\s*)+)\s*years?/i.exec(l); return m ? [...new Set(m[1]!.match(/\d{1,2}/g)!.map(Number))].filter((n) => n >= 1 && n <= 30) : null; });
@@ -337,7 +386,8 @@ export function suggestFeatures(pages: Page[], features: Feature[]): Row[] {
 }
 
 /** Only values with a decision (Accept, Edit, Not stated) become product values (AC-P23-1). */
-export function decidedResult(j: Pick<JobDoc, 'rows' | 'details' | 'variants' | 'suggestions'>) {
+export function decidedResult(j: Pick<JobDoc, 'rows' | 'details' | 'variants' | 'suggestions'> & { form?: string | null }) {
+  const form = productForm(j.form);
   const val = (r: { decision?: string | null; value?: string | null; editedValue?: string | null }) => (r.decision === 'EDIT' ? r.editedValue : r.value) ?? '';
   const taken = (r: { decision?: string | null }) => r.decision === 'ACCEPT' || r.decision === 'EDIT';
   const nums = (s: string) => (s.match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
@@ -350,6 +400,11 @@ export function decidedResult(j: Pick<JobDoc, 'rows' | 'details' | 'variants' | 
     else if (r.key === 'adultMin' || r.key === 'adultMax') { const n = nums(v)[0]; if (n !== undefined) data[r.key] = n; }
     else if (r.key === 'policyTerms') data.policyTerms = nums(v).filter((n) => Number.isInteger(n));
     else if (r.key === 'sumInsuredOptions') data.sumInsured = { options: rupeesIn(v).length ? rupeesIn(v) : nums(v.replace(/,/g, '')) };
+    else if (r.key?.startsWith('details.')) { // category details (productForms.ts), typed for their field
+      const f = form.fields.find((x) => `details.${x.key}` === r.key);
+      const typed = f ? detailValue(f, v) : undefined;
+      if (f && typed !== undefined) ((data.details ??= {}) as Record<string, unknown>)[f.key] = typed;
+    }
   }
   for (const r of j.rows) {
     if (!r.decision || r.decision === 'IGNORE') continue;
@@ -376,7 +431,7 @@ async function loadJob(ctx: AuthContext, jobId: string) {
 }
 
 /** Add my product step 3: read the brochure for the chosen category (Premium, or the trial; Normal → CAT-45). */
-export async function advisorStart(ctx: AuthContext, typeId: string, fileId: string, req: Request) {
+export async function advisorStart(ctx: AuthContext, typeId: string, fileId: string, req: Request, opts: { ignoreCategoryCheck?: boolean } = {}) {
   const acc = await Account.findById(ctx.accountId, { subscription: 1 }).lean<{ subscription: Parameters<typeof subStatus>[0] & { plan: string | null } }>();
   if (!acc || !allowsBrochureReading(subStatus(acc.subscription, clock.now()), acc.subscription.plan)) throw new AppError(403, 'PLAN_REQUIRED', 'CAT-45');
   if (!cfgBool('CFG-102') || !readerEnabled()) throw new AppError(409, 'INVALID_STATE', 'OCR-07');
@@ -388,7 +443,7 @@ export async function advisorStart(ctx: AuthContext, typeId: string, fileId: str
   if (open) return view(open);
   const { file, bytes } = await openFile(ctx, fileId, req);
   if (pageCount(bytes, file.mime) > cfgNum('CFG-30')) throw AppError.field('fileId', 'OCR-04', { 'CFG-30': cfgNum('CFG-30') });
-  const job = await OcrJob.create({ kind: 'ADVISOR', accountId: ctx.accountId, typeId, templateId: tpl._id, fileId, startedBy: ctx.userId, startedAt: clock.now() });
+  const job = await OcrJob.create({ kind: 'ADVISOR', accountId: ctx.accountId, typeId, templateId: tpl._id, fileId, startedBy: ctx.userId, startedAt: clock.now(), ...(await categoryOf(typeId)), ignoreCategoryCheck: !!opts.ignoreCategoryCheck });
   await audit({ entity: 'ocrJob', entityId: job._id, action: 'OCR_STARTED', after: { typeId, fileId, by: 'ADVISOR' } }, { req });
   run(job._id, tpl._id, bytes, file.mime, ctx);
   return view(job.toObject() as JobDoc);
@@ -418,4 +473,71 @@ export async function ocrMarksFor(ctx: AuthContext, jobId: string, typeId: strin
   for (const r of [...j.rows, ...(j.suggestions ?? [])]) if (r.decision && r.decision !== 'IGNORE') marks[r.key!] = { jobId, checkedBy: ctx.name };
   await OcrJob.updateOne({ _id: jobId }, { $set: { status: 'REVIEWED', reviewedBy: ctx.userId, applied: Object.keys(marks).length } });
   return marks;
+}
+
+// ════════ Category check and category details (client requirement, Nov 2026) ════════
+
+/** The chosen category's product form and name, stored on the job so the reading can be checked against it. */
+async function categoryOf(typeId: string | null) {
+  if (!typeId) return { form: null, categoryName: null };
+  const t = await InsuranceType.findById(typeId, { name: 1, productForm: 1 }).lean<{ name: string; productForm?: string | null }>();
+  return t ? { form: formOfType(t).code, categoryName: t.name } : { form: null, categoryName: null };
+}
+
+const DATA_TYPE: Record<DetailField['type'], string> = { NUMBER: 'Number', AMOUNT: 'Amount in ₹', PERCENT: 'Percentage', YEARS: 'Years', DAYS: 'Days', YES_NO: 'Yes/No', TEXT: 'Text', CHOICE: 'Text', CHOICES: 'Text', NUMBER_LIST: 'Text' };
+
+/** An option as it is written in brochures: the words before any bracket, "only" dropped, spaces or hyphens alike. */
+function optionPattern(option: string) {
+  const core = option.split('(')[0]!.split(' / ')[0]!.replace(/\bonly\b/i, '').trim();
+  const body = core.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[\s-]+/g, '[\\s-]+');
+  return new RegExp(`\\b${body}\\b`, 'i');
+}
+
+/**
+ * The category's own details on the brochure (rows keyed `details.<field>`): options named in the text for list fields
+ * (cover types, fuel types, payout options, regions…), and for the other fields the line naming the field. Each is a
+ * suggestion with a page and a confidence; list values are always checked by a person.
+ */
+export function readFormDetails(form: ProductForm, pages: Page[]): Row[] {
+  const rows: Row[] = [];
+  for (const f of form.fields) {
+    if (f.type === 'CHOICE' || f.type === 'CHOICES') {
+      const seen: Array<{ option: string; page: Page }> = [];
+      for (const o of f.options ?? []) {
+        const re = optionPattern(o);
+        const pg = pages.find((p) => re.test(p.text.replace(/\s+/g, ' ')));
+        if (pg) seen.push({ option: o, page: pg });
+      }
+      if (!seen.length) continue;
+      const value = f.type === 'CHOICES' ? seen.map((x) => x.option).join(', ') : seen[0]!.option;
+      const conf = Math.min(...seen.map((x) => x.page.confidence)) * (f.type === 'CHOICE' && seen.length > 1 ? 0.5 : 0.75); // several for one choice: unsure
+      rows.push(mk(`details.${f.key}`, f.label, value, conf, seen[0]!.page.number));
+      continue;
+    }
+    const [m] = matchFeatures([{ key: f.key, name: f.label, group: 'Other', dataType: DATA_TYPE[f.type], requiredToPublish: false, order: 1 } as Feature], pages);
+    if (m?.found && m.value !== null && detailValue(f, m.value) !== undefined) rows.push(mk(`details.${f.key}`, f.label, m.value, m.confidence * 0.8, m.page));
+  }
+  return rows;
+}
+
+/** A reviewed text value as the field's value (what data.details stores), or undefined when it does not fit the field. */
+export function detailValue(f: DetailField, text: string): unknown {
+  const s = (text ?? '').trim();
+  if (!s) return undefined;
+  const opts = f.options ?? [];
+  const pick = (part: string) => opts.find((o) => o.toLowerCase() === part.trim().toLowerCase()) ?? opts.find((o) => optionPattern(o).test(part));
+  switch (f.type) {
+    case 'CHOICE': return pick(s);
+    case 'CHOICES': {
+      const parts = s.split(/\s*[,;]\s*/).filter(Boolean);
+      const out = parts.map(pick);
+      if (out.some((x) => x === undefined)) return undefined;
+      return opts.filter((o) => out.includes(o));
+    }
+    case 'YES_NO': return /^(yes|y|true|covered|available|included)$/i.test(s) ? true : /^(no|n|false|not covered|not available|excluded)$/i.test(s) ? false : undefined;
+    case 'TEXT': return s.slice(0, 500);
+    case 'NUMBER_LIST': { const ns = (s.match(/\d+/g) ?? []).map(Number); return ns.length ? [...new Set(ns)].sort((a, b) => a - b) : undefined; }
+    case 'PERCENT': { const n = Number(s.replace(/[%\s]/g, '')); return Number.isFinite(n) && n >= 0 && n <= 100 ? Math.round(n * 100) / 100 : undefined; }
+    default: { const n = Number(s.replace(/[₹,\s]/g, '').replace(/^rs\.?/i, '')); return Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined; }
+  }
 }
