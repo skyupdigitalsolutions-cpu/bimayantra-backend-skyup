@@ -7,7 +7,7 @@ import { newId } from '../../lib/ids.js';
  * unique rule, so a repeated job does nothing (GR-28). Status only moves forward: QUEUED → SENT → DELIVERED → READ, or
  * SKIPPED / FAILED / CANCELLED with a reason; SENT with no update after CFG-71 becomes STATUS_UNKNOWN.
  */
-export const PURPOSES = ['RENEWAL_REMINDER', 'QUOTATION_EMAIL', 'BIRTHDAY', 'FAMILY_BIRTHDAY', 'ANNIVERSARY', 'KYC_RESULT', 'SUBSCRIPTION'] as const;
+export const PURPOSES = ['LEAD_WELCOME', 'FOLLOW_UP', 'RENEWAL_REMINDER', 'QUOTATION_EMAIL', 'BIRTHDAY', 'FAMILY_BIRTHDAY', 'ANNIVERSARY', 'KYC_RESULT', 'SUBSCRIPTION'] as const;
 const outboxSchema = new Schema(
   {
     _id: { type: String, default: () => newId('msg') },

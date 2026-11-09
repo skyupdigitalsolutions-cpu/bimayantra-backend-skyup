@@ -10,6 +10,12 @@ import { requireStepUp } from '../auth/stepUp.js';
 import { PURPOSES } from './outbox.model.js';
 import * as svc from './comms.service.js';
 import { razorpayWebhook } from './razorpay.webhook.js';
+import { env } from '../../config/env.js';
+import { AppError } from '../../lib/errors.js';
+import type { RequestHandler } from 'express';
+
+/** P-56 WhatsApp wallet is hidden unless WHATSAPP_WALLET=true: its routes answer "not found". */
+const walletOn: RequestHandler = (_req, _res, next) => { if (!env.WHATSAPP_WALLET) throw AppError.notFound(); next(); };
 
 const msgId = z.object({ id: z.string().regex(/^msg_[a-f0-9]{28}$/) });
 
@@ -35,7 +41,7 @@ export function greetingRoutes() {
 }
 export function walletRoutes() {
   const r = Router();
-  r.use(authenticate, allow('wallet.manage'));
+  r.use(walletOn, authenticate, allow('wallet.manage'));
   r.get('/', async (req, res) => sendData(res, await svc.wallet(req.auth!)));
   r.post('/recharge', writable, validate({ body: z.object({ amount: z.number().positive().max(1_000_000) }).strict() }, { amount: 'Amount' }), idempotent(), async (req, res) => sendData(res, await svc.recharge(req.auth!, req.body.amount, req), 201));
   // Razorpay Checkout returned: verify and credit (the webhook does the same if the browser closes first)
@@ -60,7 +66,7 @@ export function adminCommsRoutes() {
     sendDone(res, out.template, out.messageId);
   });
   r.post('/templates/:id/deactivate', allow('templates.approve'), validate({ params: tid }), async (req, res) => sendDone(res, await svc.deactivateTemplate(req.auth!, String(req.params.id), req), 'GEN-07'));
-  r.post('/wallet/:accountId/credit', allow('wallet.credit'), requireStepUp, validate({ params: z.object({ accountId: z.string().regex(/^acc_[a-f0-9]{28}$/) }), body: z.object({ amount: z.number().positive().max(100_000), reason: required(shortText()) }).strict() }, { amount: 'Amount', reason: 'Reason' }), async (req, res) =>
+  r.post('/wallet/:accountId/credit', walletOn, allow('wallet.credit'), requireStepUp, validate({ params: z.object({ accountId: z.string().regex(/^acc_[a-f0-9]{28}$/) }), body: z.object({ amount: z.number().positive().max(100_000), reason: required(shortText()) }).strict() }, { amount: 'Amount', reason: 'Reason' }), async (req, res) =>
     sendData(res, await svc.manualCredit(req.auth!, String(req.params.accountId), req.body.amount, req.body.reason, req)));
   return r;
 }

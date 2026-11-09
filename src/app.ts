@@ -32,6 +32,8 @@ import { renewalRoutes } from './modules/renewals/renewals.routes.js';
 import { adminCommsRoutes, commsRoutes, greetingRoutes, walletRoutes, webhookRoutes } from './modules/comms/comms.routes.js';
 import { publicReferralRoutes, referralSelfRoutes, referrerRoutes } from './modules/referrals/referrals.routes.js';
 import { callRoutes } from './modules/calls/calls.routes.js';
+import { integrationRoutes } from './modules/integrations/integrations.routes.js';
+import { ruleRoutes } from './modules/comms/rules.js';
 // Models used from Stage B on (variants, saved document types): registered here so `db:indexes` builds their rules.
 import './modules/catalogue/variant.model.js';
 import { featureTableRoutes } from './modules/catalogue/featureTable.routes.js';
@@ -120,7 +122,9 @@ export function createApp() {
   api.use('/renewals', renewalRoutes());
   api.use('/communications', commsRoutes());
   api.use('/greetings', greetingRoutes());
-  api.use('/wallet', walletRoutes());
+  api.use('/wallet', walletRoutes()); // hidden unless WHATSAPP_WALLET=true
+  api.use('/integrations', integrationRoutes()); // the advisor's own MSG91 / Brevo
+  api.use('/message-rules', ruleRoutes()); // which template goes out for which trigger
   api.use('/admin/comms', adminCommsRoutes());
   api.use('/webhooks', webhookRoutes());
   api.use('/referrers', referrerRoutes());

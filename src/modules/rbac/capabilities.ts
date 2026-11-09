@@ -75,6 +75,9 @@ export const CAPABILITIES = {
   /** Occasion greetings (P-40) and the WhatsApp wallet (P-56): the advisor. */
   'greetings.manage': ['ADV'],
   'wallet.manage': ['ADV'],
+  /** The advisor's own messaging accounts (MSG91 WhatsApp, Brevo email) and which template goes out for each trigger. */
+  'integrations.manage': ['ADV'],
+  'rules.manage': ['ADV'],
   /** Message templates (P-39): SkyUp Staff drafts, a different Admin approves; Admin credits wallets (P-56). */
   'templates.make': ['STF', 'ADM'],
   'templates.approve': ['ADM'],

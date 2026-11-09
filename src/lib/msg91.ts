@@ -17,14 +17,22 @@ import { env } from '../config/env.js';
 const BASE = 'https://control.msg91.com/api/v5';
 
 export class Msg91Temporary extends Error {}
-export class Msg91Permanent extends Error {}
+export class Msg91Permanent extends Error {
+  constructor(message: string, readonly status = 400) { super(message); }
+}
 
-async function call<T = Record<string, unknown>>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+/**
+ * An advisor's own MSG91 account (Settings → Integrations). Without it, SkyUp's account from the environment is used.
+ * namespace: optional WhatsApp namespace some MSG91 accounts need on template messages.
+ */
+export interface Msg91Creds { authKey: string; number: string; namespace?: string | null }
+
+async function call<T = Record<string, unknown>>(method: 'GET' | 'POST', path: string, body?: unknown, authKey?: string): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BASE}${path}`, {
       method,
-      headers: { authkey: env.MSG91_AUTH_KEY ?? '', accept: 'application/json', 'content-type': 'application/json' },
+      headers: { authkey: authKey ?? env.MSG91_AUTH_KEY ?? '', accept: 'application/json', 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch (e) {
@@ -33,7 +41,7 @@ async function call<T = Record<string, unknown>>(method: 'GET' | 'POST', path: s
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   const why = String(json.message ?? json.errors ?? json.error ?? `MSG91 ${res.status}`);
   if (res.status === 429 || res.status >= 500) throw new Msg91Temporary(why);
-  if (!res.ok || json.type === 'error' || json.hasError === true || json.status === 'fail') throw new Msg91Permanent(why);
+  if (!res.ok || json.type === 'error' || json.hasError === true || json.status === 'fail') throw new Msg91Permanent(why, res.ok ? 400 : res.status);
   return json as T;
 }
 
@@ -97,9 +105,10 @@ const SAMPLE: Record<string, string> = {
   name: 'Meena', 'customer name': 'Meena Iyer', 'customer first name': 'Meena', 'member name': 'Arjun', 'advisor name': 'Asha Rao',
   'advisor mobile': '9876543210', product: 'Family Shield', 'policy last 4': '4821', 'renewal date': '12-12-2026', link: 'https://app.bimayantra.in/q/abc',
   'quotation number': 'QT-202611-00012 R1', plan: 'Premium', date: '12-12-2026', result: 'verified',
+  'follow-up date': '12-12-2026', 'follow-up time': '11:30 AM',
 };
 /** Transactional purposes are UTILITY; greetings are MARKETING (Meta's categories). */
-const CATEGORY: Record<string, 'UTILITY' | 'MARKETING'> = { RENEWAL_REMINDER: 'UTILITY', QUOTATION_EMAIL: 'UTILITY', KYC_RESULT: 'UTILITY', SUBSCRIPTION: 'UTILITY', BIRTHDAY: 'MARKETING', FAMILY_BIRTHDAY: 'MARKETING', ANNIVERSARY: 'MARKETING' };
+const CATEGORY: Record<string, 'UTILITY' | 'MARKETING'> = { LEAD_WELCOME: 'UTILITY', FOLLOW_UP: 'UTILITY', RENEWAL_REMINDER: 'UTILITY', QUOTATION_EMAIL: 'UTILITY', KYC_RESULT: 'UTILITY', SUBSCRIPTION: 'UTILITY', BIRTHDAY: 'MARKETING', FAMILY_BIRTHDAY: 'MARKETING', ANNIVERSARY: 'MARKETING' };
 
 /** Create the template in MSG91 for Meta's review (it is attached to the integrated number's WhatsApp business account). */
 export async function submitWhatsAppTemplate(t: { _id: string; code?: string | null; name: string; version?: number | null; body: string; language?: string | null; purpose: string }) {
@@ -133,17 +142,95 @@ export async function whatsAppTemplateStatus(name: string, language?: string | n
 
 /** Send one template message. `from` is the integrated number (an advisor's dedicated number, or SkyUp's). */
 export async function sendWhatsAppTemplate(o: { from: string; to: string; templateName: string; language?: string | null; body: string; params: Record<string, unknown> }) {
-  const components = Object.fromEntries(variablesOf(o.body).map((v, i) => [`body_${i + 1}`, { type: 'text', value: String(o.params[v] ?? '').slice(0, 1000) || '-' }]));
+  return sendTemplateValues({ from: o.from, to: o.to, templateName: o.templateName, languageCode: languageCode(o.language), values: variablesOf(o.body).map((v) => String(o.params[v] ?? '')) });
+}
+
+/**
+ * Send a template by position: values[0] fills {{1}}, values[1] fills {{2}} … Used for an advisor's own MSG91 templates,
+ * whose blanks the advisor matched to our values in Settings → Message templates. `creds` = the advisor's account.
+ */
+export async function sendTemplateValues(o: { from: string; to: string; templateName: string; languageCode: string; values: string[]; creds?: Msg91Creds | null }) {
+  const components = Object.fromEntries(o.values.map((v, i) => [`body_${i + 1}`, { type: 'text', value: String(v ?? '').slice(0, 1000) || '-' }]));
+  const template: Record<string, unknown> = { name: o.templateName, language: { code: o.languageCode || 'en', policy: 'deterministic' }, to_and_components: [{ to: [msisdn(o.to)], components }] };
+  if (o.creds?.namespace) template.namespace = o.creds.namespace;
   const r = await call<{ request_id?: string; data?: unknown }>('POST', '/whatsapp/whatsapp-outbound-message/bulk/', {
-    integrated_number: msisdn(o.from),
+    integrated_number: msisdn(o.creds?.number ?? o.from),
     content_type: 'template',
-    payload: {
-      messaging_product: 'whatsapp',
-      type: 'template',
-      template: { name: o.templateName, language: { code: languageCode(o.language), policy: 'deterministic' }, to_and_components: [{ to: [msisdn(o.to)], components }] },
-    },
-  });
+    payload: { messaging_product: 'whatsapp', type: 'template', template },
+  }, o.creds?.authKey);
   return { id: String(r.request_id ?? '') };
+}
+
+/* ───────────────────────── An advisor's own MSG91 account ───────────────────────── */
+
+/** One WhatsApp template as it is in the advisor's MSG91 account. */
+export interface OwnTemplate {
+  name: string; language: string; status: 'APPROVED' | 'PENDING' | 'REJECTED' | 'PAUSED' | string; category: string | null;
+  body: string; blanks: number; headerFormat: string | null; supported: boolean;
+}
+const normStatus = (raw: unknown) => {
+  const v = String(raw ?? '').trim().toUpperCase();
+  if (['ENABLED', 'APPROVED', 'ACTIVE', 'LIVE'].includes(v)) return 'APPROVED';
+  if (['PENDING', 'IN_APPEAL', 'PENDING_REVIEW', 'SUBMITTED'].includes(v)) return 'PENDING';
+  if (['REJECTED', 'REFUSED', 'FLAGGED', 'DISABLED_BY_META'].includes(v)) return 'REJECTED';
+  if (['PAUSED', 'DISABLED', 'INACTIVE', 'ARCHIVED'].includes(v)) return 'PAUSED';
+  return v || 'PENDING';
+};
+/** The number of different blanks {{1}}, {{2}} … in a template body. */
+export const blanksIn = (body: string) => new Set([...String(body).matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map((m) => m[1])).size;
+/** MSG91 answers in several shapes ({ data: [...] }, { data: { data: [...] } }, [...]); find the template list. */
+function templateArray(r: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(r)) return r as Array<Record<string, unknown>>;
+  const o = (r ?? {}) as Record<string, unknown>;
+  for (const k of ['data', 'templates', 'result', 'response']) {
+    const v = o[k];
+    if (Array.isArray(v)) return v as Array<Record<string, unknown>>;
+    if (v && typeof v === 'object') { const inner = templateArray(v); if (inner.length) return inner; }
+  }
+  return [];
+}
+
+/** Every template on the advisor's integrated number, one row per language. Throws Msg91Permanent / Msg91Temporary. */
+export async function listOwnTemplates(creds: Msg91Creds): Promise<OwnTemplate[]> {
+  const r = await call<Record<string, unknown>>('GET', `/whatsapp/get-template-client/${msisdn(creds.number)}`, undefined, creds.authKey);
+  const out: OwnTemplate[] = [];
+  for (const t of templateArray(r)) {
+    const name = String(t.name ?? t.template_name ?? '').trim();
+    if (!name) continue;
+    const langs = (Array.isArray(t.languages) && t.languages.length ? t.languages : [t]) as Array<Record<string, unknown>>;
+    for (const l of langs) {
+      const comps = (Array.isArray(l.code) ? l.code : Array.isArray(l.components) ? l.components : Array.isArray(t.components) ? t.components : []) as Array<Record<string, unknown>>;
+      const kind = (c: Record<string, unknown>) => String(c.type ?? c.component_type ?? '').toUpperCase();
+      const bodyC = comps.find((c) => kind(c) === 'BODY');
+      const header = comps.find((c) => kind(c) === 'HEADER');
+      const body = String(bodyC?.text ?? l.body ?? t.body ?? '');
+      const headerFormat = header ? String(header.format ?? 'TEXT').toUpperCase() : null;
+      const headerText = String(header?.text ?? '');
+      out.push({
+        name, language: String(l.language ?? l.code_language ?? t.language ?? 'en'), status: normStatus(l.status ?? t.status),
+        category: (l.category ?? t.category ?? null) as string | null, body, blanks: blanksIn(body), headerFormat,
+        // Media headers (image, document, video) and text headers with a blank need values we do not have.
+        supported: !headerFormat || (headerFormat === 'TEXT' && blanksIn(headerText) === 0),
+      });
+    }
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Check an advisor's MSG91 key and number before saving them. MSG91 answers 401 for a wrong key; any other refusal
+ * means the number is not integrated on that account.
+ */
+export async function checkOwnAccount(creds: Msg91Creds): Promise<{ ok: true; templates: number } | { ok: false; reason: 'KEY' | 'NUMBER' | 'UNREACHABLE'; detail: string }> {
+  try {
+    const t = await listOwnTemplates(creds);
+    return { ok: true, templates: t.length };
+  } catch (e) {
+    if (e instanceof Msg91Temporary) return { ok: false, reason: 'UNREACHABLE', detail: e.message };
+    const m = (e as Msg91Permanent).message ?? '';
+    const keyProblem = (e as Msg91Permanent).status === 401 || (e as Msg91Permanent).status === 403 || /auth|unauthori[sz]ed|invalid.*key|authkey/i.test(m);
+    return { ok: false, reason: keyProblem ? 'KEY' : 'NUMBER', detail: m };
+  }
 }
 
 /**

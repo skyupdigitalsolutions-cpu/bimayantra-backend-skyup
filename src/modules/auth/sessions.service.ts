@@ -72,12 +72,14 @@ export async function startSession(userId: string, req: Request, client: 'WEB' |
 }
 
 export function issueTokens(userId: string, sessionId: string, jti: string, sessionExpiresAt: Date): Tokens {
-  const secondsLeft = Math.ceil((sessionExpiresAt.getTime() - clock.nowMs()) / 1000);
+  const secondsLeft = Math.max(1, Math.ceil((sessionExpiresAt.getTime() - clock.nowMs()) / 1000));
+  // Neither token outlives the session; expiresIn is the access token's real lifetime (apps refresh just before it).
+  const accessSeconds = Math.min(env.JWT_ACCESS_TTL_SECONDS, secondsLeft);
   return {
-    accessToken: signAccessToken({ sub: userId, sid: sessionId }),
+    accessToken: signAccessToken({ sub: userId, sid: sessionId }, accessSeconds),
     refreshToken: signRefreshToken({ sub: userId, sid: sessionId, jti }, secondsLeft),
     tokenType: 'Bearer',
-    expiresIn: env.JWT_ACCESS_TTL_SECONDS,
+    expiresIn: accessSeconds,
     sessionExpiresAt,
   };
 }

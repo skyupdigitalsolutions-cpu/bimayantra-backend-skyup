@@ -15,6 +15,7 @@ Object.assign(process.env, {
   PII_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
   PII_HASH_KEY: Buffer.alloc(32, 9).toString('base64'),
   SMS_PROVIDER: 'dev',
+  WHATSAPP_WALLET: 'true', // the older suites cover the wallet; integrations.int.test.ts checks it hidden
   DEV_TOOLS: 'true',
   CORS_ORIGINS: 'http://localhost:5173',
 });

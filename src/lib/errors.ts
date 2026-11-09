@@ -6,6 +6,9 @@ import { msg, type MessageId, type MessageParams } from './messages.js';
  */
 export type ErrorCode =
   | 'VALIDATION_FAILED'
+  | 'PROVIDER_UNREACHABLE'
+  | 'PROVIDER_REFUSED'
+  | 'NOT_CONNECTED'
   | 'UNAUTHENTICATED'
   | 'SESSION_ENDED'
   | 'TOKEN_EXPIRED'

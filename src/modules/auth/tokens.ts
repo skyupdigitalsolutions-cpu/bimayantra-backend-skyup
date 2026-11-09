@@ -11,9 +11,10 @@ export interface RefreshClaims { sub: string; sid: string; jti: string; typ: 're
 export const newJti = () => randomBytes(32).toString('base64url');
 export const hashJti = (jti: string) => createHash('sha256').update(jti).digest('hex');
 
-export const signAccessToken = (c: { sub: string; sid: string }) =>
+/** The access token lives JWT_ACCESS_TTL_SECONDS, but never longer than its session (CFG-08). */
+export const signAccessToken = (c: { sub: string; sid: string }, expiresInSeconds = env.JWT_ACCESS_TTL_SECONDS) =>
   jwt.sign({ sid: c.sid, typ: 'access' }, env.JWT_ACCESS_SECRET, {
-    algorithm: ALG, subject: c.sub, expiresIn: env.JWT_ACCESS_TTL_SECONDS, issuer: env.JWT_ISSUER, audience: env.JWT_AUDIENCE,
+    algorithm: ALG, subject: c.sub, expiresIn: Math.max(1, Math.min(env.JWT_ACCESS_TTL_SECONDS, expiresInSeconds)), issuer: env.JWT_ISSUER, audience: env.JWT_AUDIENCE,
   });
 
 /** The refresh token lives no longer than its session (CFG-08). */

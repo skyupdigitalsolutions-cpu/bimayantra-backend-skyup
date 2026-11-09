@@ -19,9 +19,11 @@ import { BouncedAddress, MessageTemplate, Outbox, WalletTxn, WebhookEvent, type 
 import { BrevoPermanent, brevoEvent, sendEmail } from './brevo.js';
 import * as rzp from '../../lib/razorpay.js';
 import * as msg91 from '../../lib/msg91.js';
+import { byWebhookToken, ownBrevo, ownMsg91 } from '../integrations/integrations.service.js';
+import { ruleFor } from './rules.js';
 
 type Channel = 'EMAIL' | 'WHATSAPP';
-const AUTOMATED_WA = ['RENEWAL_REMINDER', 'BIRTHDAY', 'FAMILY_BIRTHDAY', 'ANNIVERSARY'];
+const AUTOMATED_WA = ['LEAD_WELCOME', 'FOLLOW_UP', 'RENEWAL_REMINDER', 'BIRTHDAY', 'FAMILY_BIRTHDAY', 'ANNIVERSARY'];
 const GREETINGS = ['BIRTHDAY', 'FAMILY_BIRTHDAY', 'ANNIVERSARY'];
 const RANK: Record<string, number> = { QUEUED: 0, SENT: 1, STATUS_UNKNOWN: 1, DELIVERED: 2, READ: 3 };
 const rupees = (p: number) => (p / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -45,13 +47,13 @@ export const devProvider = {
 };
 /** Brevo for email (EMAIL_PROVIDER=brevo): failures become our Temporary / Permanent kinds so retries work the same. */
 const brevoProvider = {
-  async send(_channel: Channel, to: string, subject: string | null, text: string) {
-    try { return await sendEmail(to, subject, text); } catch (e) { if (e instanceof BrevoPermanent) throw new PermanentFailure((e as Error).message); throw new TemporaryFailure((e as Error).message); }
+  async send(_channel: Channel, to: string, subject: string | null, text: string, x?: SendExtra) {
+    try { return await sendEmail(to, subject, text, x?.brevo ?? null); } catch (e) { if (e instanceof BrevoPermanent) throw new PermanentFailure((e as Error).message); throw new TemporaryFailure((e as Error).message); }
   },
   async submitTemplate(_t: TemplateRow) { /* email templates need no outside approval */ },
 };
 /** What a real provider may need beyond the rendered text (WhatsApp templates send variables, not text). */
-interface SendExtra { template: TemplateRow; params: Record<string, unknown>; accountId: string }
+interface SendExtra { template: TemplateRow; params: Record<string, unknown>; accountId: string; brevo?: import('./brevo.js').BrevoCreds | null }
 /** MSG91 WhatsApp (WHATSAPP_PROVIDER=msg91): template messages from the advisor's dedicated number, or SkyUp's. */
 const msg91WhatsApp = {
   async send(_channel: Channel, to: string, _subject: string | null, _text: string, x?: SendExtra) {
@@ -108,13 +110,13 @@ export async function syncWhatsAppTemplates(now = clock.now()) {
 
 /** MSG91 WhatsApp webhook: POST /webhooks/msg91/<MSG91_WEBHOOK_TOKEN> (delivery reports and inbound STOP). */
 export async function msg91Webhook(req: Request, token: string) {
-  const want = env.MSG91_WEBHOOK_TOKEN ?? '';
-  if (!want || token.length !== want.length || !timingSafeEqual(Buffer.from(token), Buffer.from(want))) throw AppError.forbidden();
+  // SkyUp's own address, or an advisor's own (Settings → Integrations): events then apply to that account only.
+  const scope = await webhookScope('MSG91', token, env.MSG91_WEBHOOK_TOKEN);
   const items = (Array.isArray(req.body) ? req.body : Array.isArray(req.body?.data) ? req.body.data : [req.body]) as Array<Record<string, unknown>>;
   let processed = 0;
   for (const b of items.slice(0, 200)) {
     const e = msg91.msg91Event(b ?? {});
-    if (e && (await applyMessageEvent(e as MessageEvent, 'msg91')).processed) processed++;
+    if (e && (await applyMessageEvent(e as MessageEvent, 'msg91', scope)).processed) processed++;
   }
   return { received: items.length, processed };
 }
@@ -130,12 +132,18 @@ export function verify(req: Request) {
 
 // ── Templates (P-39) ──
 export const VARIABLES: Record<string, string[]> = {
+  LEAD_WELCOME: ['name', 'advisor name', 'advisor mobile'],
+  FOLLOW_UP: ['name', 'follow-up date', 'follow-up time', 'advisor name', 'advisor mobile'],
   RENEWAL_REMINDER: ['customer first name', 'product', 'policy last 4', 'renewal date', 'advisor name', 'advisor mobile'],
   QUOTATION_EMAIL: ['customer name', 'quotation number', 'link', 'advisor name', 'advisor mobile'],
   BIRTHDAY: ['name', 'advisor name'], FAMILY_BIRTHDAY: ['customer name', 'member name', 'advisor name'], ANNIVERSARY: ['name', 'advisor name'],
   KYC_RESULT: ['advisor name', 'result'], SUBSCRIPTION: ['advisor name', 'plan', 'date'],
 };
 const SYSTEM: Array<{ code: string; name: string; channel: Channel; purpose: string; subject?: string; body: string }> = [
+  { code: 'LEAD-WELCOME', name: 'New lead welcome (WhatsApp)', channel: 'WHATSAPP', purpose: 'LEAD_WELCOME', body: 'Hi {name}, thank you for your interest. I am {advisor name}, your insurance advisor, and I will contact you shortly. For anything urgent, call me on {advisor mobile}.' },
+  { code: 'LEAD-WELCOME', name: 'New lead welcome (email)', channel: 'EMAIL', purpose: 'LEAD_WELCOME', subject: 'Thank you for your interest, {name}', body: 'Dear {name},\n\nThank you for your interest. I am {advisor name}, your insurance advisor, and I will contact you shortly.\n\nFor anything urgent, call me on {advisor mobile}.\n\nRegards,\n{advisor name}' },
+  { code: 'FOLLOW-UP', name: 'Follow-up (WhatsApp)', channel: 'WHATSAPP', purpose: 'FOLLOW_UP', body: 'Hi {name}, this is {advisor name} following up on your insurance enquiry as planned for {follow-up date} at {follow-up time}. Please reply here or call me on {advisor mobile}.' },
+  { code: 'FOLLOW-UP', name: 'Follow-up (email)', channel: 'EMAIL', purpose: 'FOLLOW_UP', subject: 'Following up on your insurance enquiry', body: 'Dear {name},\n\nI am following up on your insurance enquiry as planned for {follow-up date} at {follow-up time}. Reply to this email or call me on {advisor mobile} at a time that suits you.\n\nRegards,\n{advisor name}' },
   { code: 'REN-T1', name: 'Renewal reminder (email)', channel: 'EMAIL', purpose: 'RENEWAL_REMINDER', subject: 'Your policy is due for renewal', body: 'Dear {customer first name}, your {product} policy ending {policy last 4} is due for renewal on {renewal date}. Please contact {advisor name} on {advisor mobile} to renew it on time.' },
   { code: 'REN-T1', name: 'Renewal reminder (WhatsApp)', channel: 'WHATSAPP', purpose: 'RENEWAL_REMINDER', body: 'Dear {customer first name}, your {product} policy ending {policy last 4} is due for renewal on {renewal date}. Please contact {advisor name} on {advisor mobile} to renew it on time.' },
   { code: 'QT-EMAIL', name: 'Quotation email', channel: 'EMAIL', purpose: 'QUOTATION_EMAIL', subject: 'Your insurance quotation {quotation number}', body: 'Dear {customer name}, here is your quotation {quotation number}: {link}. For any questions, contact {advisor name} on {advisor mobile}.' },
@@ -225,6 +233,13 @@ export async function skipFor(m: OutboxDoc): Promise<string | null> {
     const c = await RenewalCycle.findById(related.cycleId).lean();
     return c ? skipReason(c as never, m.channel as Channel) : 'Renewal removed';
   }
+  const leadRef = related as { leadId?: string; followUpAt?: string } | null;
+  if (leadRef?.leadId) { // New lead welcome / follow-up: the lead must still be open (and the follow-up not moved)
+    const { Lead } = await import('../leads/lead.model.js');
+    const l = await Lead.findById(leadRef.leadId, { isOpen: 1, nextFollowUpAt: 1 }).lean<{ isOpen: boolean; nextFollowUpAt: Date | null }>();
+    if (!l || !l.isOpen) return 'Lead closed';
+    if (m.purpose === 'FOLLOW_UP' && leadRef.followUpAt && l.nextFollowUpAt?.toISOString() !== leadRef.followUpAt) return 'Follow-up moved';
+  }
   const consent = await consentOf(m.accountId, m.personKey ?? null, m.channel as Channel);
   if (GREETINGS.includes(m.purpose)) {
     const acc = await planOf(m.accountId);
@@ -260,15 +275,48 @@ export async function sendDue(now = clock.now()) {
     const skip = async (reason: string) => { await Outbox.updateOne({ _id: m._id, status: 'QUEUED' }, { $set: { status: 'SKIPPED', skipReason: reason, statusAt: now }, $push: { history: { at: now, status: 'SKIPPED', note: reason } } }); out.skipped++; };
     const why = await skipFor(m);
     if (why) { await skip(why); continue; }
-    const t = await MessageTemplate.findOne({ purpose: m.purpose, channel: m.channel, status: 'ACTIVE' }).lean<TemplateRow>();
-    if (!t) { await skip('Template not active'); continue; } // AC-P39-3
-    // MSG91: a WhatsApp message waits (stays QUEUED) until Meta has approved its template at MSG91
-    if (m.channel === 'WHATSAPP' && env.WHATSAPP_PROVIDER === 'msg91' && (t as { providerStatus?: string | null }).providerStatus !== 'APPROVED') {
-      if ((t as { providerStatus?: string | null }).providerStatus === 'REJECTED') { await skip('Template rejected by Meta'); continue; }
-      continue;
+    const params = m.params as Record<string, unknown>;
+    // Settings → Message templates: which template this advisor sends for this trigger and channel.
+    const rule = await ruleFor(m.accountId, m.purpose);
+    const choice = m.channel === 'WHATSAPP' ? rule.whatsapp : rule.email;
+    if (choice.mode === 'OFF') { await skip('Turned off in Message templates'); continue; }
+    // Settings → Integrations: the advisor's own MSG91 / Brevo account, when connected and working.
+    const ownWa = m.channel === 'WHATSAPP' && choice.mode === 'OWN' ? await ownMsg91(m.accountId) : null;
+    const ownMail = m.channel === 'EMAIL' ? await ownBrevo(m.accountId) : null;
+    let plan: { send: () => Promise<{ id: string }>; text: string; subject: string | null; templateId: string | null; templateVersion: number | null };
+    if (ownWa && choice.mode === 'OWN' && (choice as { templateName: string | null }).templateName) {
+      // The advisor's own approved MSG91 template: blank n = our value variables[n-1]; sent from their number.
+      const w = choice as { templateName: string; language: string | null; variables: string[]; body: string | null };
+      const values = w.variables.map((v) => String(params[v] ?? ''));
+      const text = String(w.body ?? w.templateName).replace(/\{\{\s*(\d+)\s*\}\}/g, (_x, n: string) => values[Number(n) - 1] ?? '');
+      plan = { text, subject: null, templateId: null, templateVersion: null,
+        send: async () => {
+          try { return await msg91.sendTemplateValues({ from: ownWa.number, to: m.to, templateName: w.templateName, languageCode: w.language || 'en', values, creds: ownWa }); }
+          catch (e) { if (e instanceof msg91.Msg91Permanent) throw new PermanentFailure((e as Error).message); throw new TemporaryFailure((e as Error).message); }
+        } };
+    } else if (m.channel === 'EMAIL' && choice.mode === 'OWN' && (choice as { body?: string | null }).body) {
+      // The advisor's own email wording, through their Brevo (or Bimayantra's email when not connected).
+      const e = choice as { subject: string | null; body: string };
+      const text = render(e.body, params), subject = e.subject ? render(e.subject, params) : null;
+      const provider = ownMail ? brevoProvider : providerFor('EMAIL');
+      plan = { text, subject, templateId: null, templateVersion: null, send: () => provider.send('EMAIL', m.to, subject, text, { template: null as unknown as TemplateRow, params, accountId: m.accountId, brevo: ownMail }) };
+    } else {
+      // Bimayantra's template (also when the advisor chose their own WhatsApp template but MSG91 is not connected now).
+      const t = await MessageTemplate.findOne({ purpose: m.purpose, channel: m.channel, status: 'ACTIVE' }).lean<TemplateRow>();
+      if (!t) { await skip('Template not active'); continue; } // AC-P39-3
+      // MSG91: a WhatsApp message waits (stays QUEUED) until Meta has approved its template at MSG91
+      if (m.channel === 'WHATSAPP' && env.WHATSAPP_PROVIDER === 'msg91' && (t as { providerStatus?: string | null }).providerStatus !== 'APPROVED') {
+        if ((t as { providerStatus?: string | null }).providerStatus === 'REJECTED') { await skip('Template rejected by Meta'); continue; }
+        continue;
+      }
+      const text = render(t.body, params);
+      const subject = t.subject ? render(t.subject, params) : null;
+      const provider = m.channel === 'EMAIL' && ownMail ? brevoProvider : providerFor(m.channel as Channel);
+      plan = { text, subject, templateId: t._id, templateVersion: t.version ?? null, send: () => provider.send(m.channel as Channel, m.to, subject, text, { template: t, params, accountId: m.accountId, brevo: ownMail }) };
     }
+    // P-56 wallet (only when WHATSAPP_WALLET is on): Bimayantra-sent automated WhatsApp needs credit; own MSG91 never does.
     const price = cfgNum('CFG-162');
-    const automated = m.channel === 'WHATSAPP' && AUTOMATED_WA.includes(m.purpose);
+    const automated = env.WHATSAPP_WALLET && m.channel === 'WHATSAPP' && AUTOMATED_WA.includes(m.purpose) && !ownWa;
     if (automated) {
       const acc = await planOf(m.accountId);
       if ((acc?.wallet.balancePaise ?? 0) < price) { // AC-P56-2: never sent on credit
@@ -277,11 +325,9 @@ export async function sendDue(now = clock.now()) {
         continue;
       }
     }
-    const text = render(t.body, m.params as Record<string, unknown>);
-    const subject = t.subject ? render(t.subject, m.params as Record<string, unknown>) : null;
     try {
-      const r = await providerFor(m.channel as Channel).send(m.channel as Channel, m.to, subject, text, { template: t, params: m.params as Record<string, unknown>, accountId: m.accountId });
-      const u = await Outbox.updateOne({ _id: m._id, status: 'QUEUED' }, { $set: { status: 'SENT', providerMessageId: r.id, sentAt: now, statusAt: now, text, subject, templateId: t._id, templateVersion: t.version, attempts: m.attempts + 1 }, $push: { history: { at: now, status: 'SENT', note: null } } });
+      const r = await plan.send();
+      const u = await Outbox.updateOne({ _id: m._id, status: 'QUEUED' }, { $set: { status: 'SENT', providerMessageId: r.id, sentAt: now, statusAt: now, text: plan.text, subject: plan.subject, templateId: plan.templateId, templateVersion: plan.templateVersion, attempts: m.attempts + 1 }, $push: { history: { at: now, status: 'SENT', note: ownWa || (m.channel === 'EMAIL' && ownMail) ? 'Sent through your own account' : null } } });
       if (!u.modifiedCount) continue;
       out.sent++;
       if (automated) await debit(m.accountId, m._id, price);
@@ -330,30 +376,45 @@ export async function messageWebhook(req: Request) {
 
 /** Brevo delivery events: POST /webhooks/brevo/<BREVO_WEBHOOK_TOKEN> (Brevo does not sign; the secret path is the check). */
 export async function brevoWebhook(req: Request, token: string) {
-  const want = env.BREVO_WEBHOOK_TOKEN ?? '';
-  if (!want || token.length !== want.length || !timingSafeEqual(Buffer.from(token), Buffer.from(want))) throw AppError.forbidden();
+  const scope = await webhookScope('BREVO', token, env.BREVO_WEBHOOK_TOKEN);
   const items = (Array.isArray(req.body) ? req.body : [req.body]) as Array<Record<string, unknown>>;
   let processed = 0;
   for (const b of items.slice(0, 100)) {
     const e = brevoEvent(b ?? {});
-    if (e && e.providerMessageId && (await applyMessageEvent(e as MessageEvent, 'brevo')).processed) processed++;
+    if (e && e.providerMessageId && (await applyMessageEvent(e as MessageEvent, 'brevo', scope)).processed) processed++;
   }
   return { received: items.length, processed };
 }
 
-async function applyMessageEvent(e: MessageEvent, source: string) {
-  if (!e?.eventId || !(await once(e.eventId, source))) return { processed: false };
+/**
+ * Which webhook address was called: SkyUp's own (null scope: every account) or an advisor's own integration (that
+ * account only). Anything else is forbidden: a forged webhook changes nothing.
+ */
+async function webhookScope(provider: 'MSG91' | 'BREVO', token: string, platformToken: string | undefined): Promise<string | null> {
+  const want = platformToken ?? '';
+  if (want && token.length === want.length && timingSafeEqual(Buffer.from(token), Buffer.from(want))) return null;
+  const own = await byWebhookToken(provider, token);
+  if (!own) throw AppError.forbidden();
+  return own.accountId;
+}
+
+async function applyMessageEvent(e: MessageEvent, source: string, scope: string | null = null) {
+  if (!e?.eventId || !(await once(e.eventId, scope ? `${source}:${scope}` : source))) return { processed: false };
   const now = clock.now();
+  const inScope = scope ? { accountId: scope } : {};
+  if (e.type === 'TEMPLATE' && scope) return { processed: true }; // template decisions only from SkyUp's own account
   if (e.type === 'STATUS' && e.providerMessageId && e.status) {
-    const m = await Outbox.findOne({ providerMessageId: e.providerMessageId }, { status: 1 }).lean<{ _id: string; status: string }>();
+    const m = await Outbox.findOne({ providerMessageId: e.providerMessageId, ...inScope }, { status: 1 }).lean<{ _id: string; status: string }>();
     if (!m) return { processed: true };
     const forward = e.status === 'FAILED' ? (RANK[m.status] ?? 9) <= 1 : (RANK[e.status] ?? 0) > (RANK[m.status] ?? 9); // AC-P42-2: never backwards
     if (forward) await Outbox.updateOne({ _id: m._id, status: m.status }, { $set: { status: e.status, statusAt: now, ...(e.status === 'FAILED' ? { skipReason: e.reason ?? 'Failed at the provider' } : {}) }, $push: { history: { at: now, status: e.status, note: e.reason ?? null } } });
   } else if (e.type === 'STOP' && e.from) { // AC-P42-3: STOP withdraws WhatsApp consent and cancels queued WhatsApp messages
     const mobile = normalizeMobile(e.from);
-    const cus = await Customer.find({ mobile }, { _id: 1, accountId: 1 }).lean<Array<{ _id: string; accountId: string }>>();
-    const fam = await FamilyMember.find({ mobile }, { _id: 1, accountId: 1, customerId: 1 }).lean<Array<{ _id: string; accountId: string; customerId: string }>>();
-    const keys = [...cus.map((c) => ({ accountId: c.accountId, personKey: `C:${c._id}`, customerId: c._id })), ...fam.map((f) => ({ accountId: f.accountId, personKey: `F:${f._id}`, customerId: f.customerId }))];
+    const cus = await Customer.find({ mobile, ...inScope }, { _id: 1, accountId: 1 }).lean<Array<{ _id: string; accountId: string }>>();
+    const fam = await FamilyMember.find({ mobile, ...inScope }, { _id: 1, accountId: 1, customerId: 1 }).lean<Array<{ _id: string; accountId: string; customerId: string }>>();
+    const { Lead } = await import('../leads/lead.model.js');
+    const leads = await Lead.find({ mobile, isOpen: true, ...inScope }, { _id: 1, accountId: 1 }).lean<Array<{ _id: string; accountId: string }>>();
+    const keys: Array<{ accountId: string; personKey: string; customerId: string | null }> = [...cus.map((c) => ({ accountId: c.accountId, personKey: `C:${c._id}`, customerId: c._id })), ...fam.map((f) => ({ accountId: f.accountId, personKey: `F:${f._id}`, customerId: f.customerId })), ...leads.map((l) => ({ accountId: l.accountId, personKey: `L:${l._id}`, customerId: null }))];
     for (const k of keys) {
       await Consent.updateOne({ accountId: k.accountId, personKey: k.personKey, channel: 'WHATSAPP' }, { $set: { status: 'WITHDRAWN', recordedAt: now, howGiven: 'WhatsApp STOP' }, $setOnInsert: { customerId: k.customerId }, $push: { history: { at: now, status: 'WITHDRAWN', by: 'SYSTEM', note: 'STOP from WhatsApp' } } }, { upsert: true });
       await Outbox.updateMany({ accountId: k.accountId, personKey: k.personKey, channel: 'WHATSAPP', status: 'QUEUED' }, { $set: { status: 'SKIPPED', skipReason: 'Consent withdrawn', statusAt: now } });
@@ -361,7 +422,7 @@ async function applyMessageEvent(e: MessageEvent, source: string) {
     }
   } else if (e.type === 'BOUNCE' && e.address) { // AC-P42-4
     await BouncedAddress.updateOne({ _id: e.address.toLowerCase() }, { $set: { at: now, reason: e.reason ?? 'Hard bounce' } }, { upsert: true });
-    if (e.providerMessageId) await Outbox.updateOne({ providerMessageId: e.providerMessageId, status: { $in: ['SENT', 'STATUS_UNKNOWN'] } }, { $set: { status: 'FAILED', skipReason: 'Email address bounced', statusAt: now } });
+    if (e.providerMessageId) await Outbox.updateOne({ providerMessageId: e.providerMessageId, ...inScope, status: { $in: ['SENT', 'STATUS_UNKNOWN'] } }, { $set: { status: 'FAILED', skipReason: 'Email address bounced', statusAt: now } });
     await Outbox.updateMany({ to: e.address.toLowerCase(), channel: 'EMAIL', status: 'QUEUED' }, { $set: { status: 'SKIPPED', skipReason: 'Email address bounced', statusAt: now } });
   } else if (e.type === 'TEMPLATE' && e.templateId) { // Meta's decision (AC-P39-1)
     const approved = e.status === ('APPROVED' as never) || (e as { decision?: string }).decision === 'APPROVED';
@@ -489,7 +550,10 @@ export async function runGreetingJob(today = istToday()) {
   const accounts = await Account.find({ 'subscription.plan': 'PREMIUM', 'greetings.on': true }, { _id: 1 }).lean<Array<{ _id: string }>>();
   for (const a of accounts) {
     const adv = await User.findOne({ accountId: a._id, role: 'ADV' }, { name: 1 }).lean<{ name: string }>();
+    const off = new Set<string>();
+    for (const g of GREETINGS) if ((await ruleFor(a._id, g)).whatsapp.mode === 'OFF') off.add(g);
     for (const o of await occasionsOn(a._id, today.slice(5))) {
+      if (off.has(o.occasion)) continue; // turned off in Message templates
       const params = { ...o.params, 'advisor name': adv?.name ?? '', occasionPerson: o.person };
       const draft = { accountId: a._id, customerId: o.customerId, personKey: o.recipientKey, channel: 'WHATSAPP', purpose: o.occasion, template: o.occasion, params, to: o.to, text: o.occasion, occurrenceKey: `${a._id}|${o.person}|${o.occasion}|${today.slice(0, 4)}`, day: today };
       const why = await skipFor(draft as unknown as OutboxDoc);
@@ -544,7 +608,13 @@ export async function list(ctx: AuthContext, q: { tab?: string; channel?: string
   const rows = await Outbox.find({ accountId: ctx.accountId, ...(q.status ? { status: q.status } : { status: { $in: TABS[q.tab ?? 'scheduled'] ?? TABS.scheduled } }), ...(q.channel ? { channel: q.channel } : {}), ...(q.purpose ? { purpose: q.purpose } : {}),
     ...(q.from || q.to ? { day: { ...(q.from ? { $gte: q.from } : {}), ...(q.to ? { $lte: q.to } : {}) } } : {}) }).sort({ createdAt: -1 }).limit(300).lean<OutboxDoc[]>();
   const names = new Map((await Customer.find({ _id: { $in: rows.map((r) => r.customerId).filter(Boolean) } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((c) => [c._id, c.name]));
-  return rows.map((r) => ({ id: r._id, channel: r.channel, purpose: r.purpose, to: r.to, customer: r.customerId ? names.get(r.customerId) ?? null : null, status: r.status, reason: r.skipReason, createdAt: r.createdAt, sentAt: r.sentAt, statusAt: r.statusAt, text: r.text, history: r.history, resends: r.resends, resendOf: r.resendOf }));
+  const leadIds = rows.map((r) => (r.related as { leadId?: string } | null)?.leadId).filter(Boolean) as string[];
+  if (leadIds.length) {
+    const { Lead } = await import('../leads/lead.model.js');
+    for (const l of await Lead.find({ _id: { $in: leadIds } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()) names.set(l._id, l.name);
+  }
+  const who = (r: OutboxDoc) => (r.customerId ? names.get(r.customerId) ?? null : names.get((r.related as { leadId?: string } | null)?.leadId ?? '') ?? null);
+  return rows.map((r) => ({ id: r._id, channel: r.channel, purpose: r.purpose, to: r.to, customer: who(r), status: r.status, reason: r.skipReason, createdAt: r.createdAt, sentAt: r.sentAt, statusAt: r.statusAt, text: r.text, history: r.history, resends: r.resends, resendOf: r.resendOf }));
 }
 export async function cancel(ctx: AuthContext, id: string, req: Request) {
   const u = await Outbox.findOneAndUpdate({ _id: id, accountId: ctx.accountId, status: 'QUEUED' }, { $set: { status: 'CANCELLED', skipReason: 'Cancelled by advisor', statusAt: clock.now() } }, { new: true }).lean();
@@ -571,4 +641,50 @@ export async function resend(ctx: AuthContext, id: string, req: Request) {
 /** Queue a quotation email (P-28 share by email); the sender sends it. */
 export async function queueQuotationEmail(o: { accountId: string; customerId: string; to: string; params: Record<string, string>; quotationId: string; revision: number }) {
   await Outbox.create({ accountId: o.accountId, customerId: o.customerId, personKey: `C:${o.customerId}`, channel: 'EMAIL', purpose: 'QUOTATION_EMAIL', template: 'QT-EMAIL', params: o.params, to: o.to.toLowerCase(), text: 'Quotation email', occurrenceKey: `${o.quotationId}|R${o.revision}|EMAIL|${randomUUID()}`, related: { quotationId: o.quotationId, revision: o.revision }, day: istToday(), history: [{ at: clock.now(), status: 'QUEUED', note: null }] });
+}
+
+// ── New lead welcome and follow-up (Settings → Message templates) ──
+/**
+ * Every minute: queue the welcome for new leads and the follow-up message for leads whose follow-up time has come, for
+ * accounts that turned these triggers on. Repeat-safe (occurrence key); only leads from the moment the trigger was
+ * turned on and from the last day, so turning it on never messages old leads. Rules (consent, window, lead still open)
+ * are checked again by the sender.
+ */
+export async function queueLeadMessages(now = clock.now()) {
+  const { MessageRule } = await import('./rules.js');
+  const { Lead } = await import('../leads/lead.model.js');
+  const rules = await MessageRule.find({ trigger: { $in: ['LEAD_WELCOME', 'FOLLOW_UP'] }, activeSince: { $ne: null } }).lean<Array<{ accountId: string; trigger: string; activeSince: Date; whatsapp?: { mode?: string }; email?: { mode?: string } }>>();
+  let queued = 0, skipped = 0;
+  const dayAgo = new Date(now.getTime() - 86_400_000);
+  for (const r of rules) {
+    const channels = (['WHATSAPP', 'EMAIL'] as const).filter((c) => (c === 'WHATSAPP' ? r.whatsapp?.mode : r.email?.mode) && (c === 'WHATSAPP' ? r.whatsapp?.mode : r.email?.mode) !== 'OFF');
+    if (!channels.length) continue;
+    const since = new Date(Math.max(new Date(r.activeSince).getTime(), dayAgo.getTime()));
+    const leads = await Lead.find(r.trigger === 'LEAD_WELCOME'
+      ? { accountId: r.accountId, isOpen: true, createdAt: { $gte: since, $lte: now } }
+      : { accountId: r.accountId, isOpen: true, nextFollowUpAt: { $gte: since, $lte: now } },
+    { name: 1, mobile: 1, email: 1, nextFollowUpAt: 1 }).limit(500).lean<Array<{ _id: string; name: string; mobile: string; email: string | null; nextFollowUpAt: Date | null }>>();
+    if (!leads.length) continue;
+    const adv = await User.findOne({ accountId: r.accountId, role: 'ADV' }, { name: 1, mobile: 1 }).lean<{ name: string; mobile: string }>();
+    for (const l of leads) {
+      const fu = l.nextFollowUpAt ? new Date(l.nextFollowUpAt) : null;
+      const ist = fu ? new Date(fu.getTime() + 5.5 * 3_600_000) : null;
+      const params: Record<string, string> = {
+        name: l.name.split(' ')[0] ?? l.name, 'advisor name': adv?.name ?? 'your advisor', 'advisor mobile': adv?.mobile ?? '',
+        ...(ist ? { 'follow-up date': ist.toISOString().slice(0, 10).split('-').reverse().join('-'), 'follow-up time': ist.toISOString().slice(11, 16) } : {}),
+      };
+      for (const channel of channels) {
+        const to = channel === 'EMAIL' ? l.email : l.mobile;
+        if (!to) continue;
+        const occurrenceKey = r.trigger === 'LEAD_WELCOME' ? `${l._id}|LEAD_WELCOME|${channel}` : `${l._id}|FOLLOW_UP|${fu!.toISOString()}|${channel}`;
+        const draft = { accountId: r.accountId, customerId: null, personKey: `L:${l._id}`, channel, purpose: r.trigger, template: r.trigger, params, to: channel === 'EMAIL' ? to.toLowerCase() : to, text: r.trigger, occurrenceKey,
+          related: { leadId: l._id, ...(fu ? { followUpAt: fu.toISOString() } : {}) }, day: istToday() };
+        if (await Outbox.exists({ occurrenceKey })) continue;
+        const why = await skipFor(draft as unknown as OutboxDoc);
+        try { await Outbox.create({ ...draft, status: why ? 'SKIPPED' : 'QUEUED', skipReason: why, history: [{ at: now, status: why ? 'SKIPPED' : 'QUEUED', note: why }] }); why ? skipped++ : queued++; }
+        catch (e) { if (!isDuplicateKey(e)) throw e; }
+      }
+    }
+  }
+  return { queued, skipped };
 }

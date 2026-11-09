@@ -32,7 +32,8 @@ const schema = z.object({
 
   JWT_ACCESS_SECRET: z.string().min(32),
   JWT_REFRESH_SECRET: z.string().min(32),
-  JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+  /** Access token lifetime: 1 to 60 minutes (15 by default). Refreshed silently; the session limits are CFG-07 / CFG-08. */
+  JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
   JWT_ISSUER: z.string().default('bimayantra-api'),
   JWT_AUDIENCE: z.string().default('bimayantra-clients'),
 
@@ -68,6 +69,9 @@ const schema = z.object({
   EMAIL_FROM_ADDRESS: z.string().email().optional(),
   EMAIL_FROM_NAME: z.string().default('Bimayantra'),
   EMAIL_REPLY_TO: z.string().email().optional(),
+  /** P-56 prepaid WhatsApp wallet. Hidden (false, the default): no wallet pages or routes, no balance check and no
+   *  per-message debit; automated WhatsApp messages go out without credits. true brings the wallet back unchanged. */
+  WHATSAPP_WALLET: bool.default('false'),
   // Payments: 'razorpay' = Razorpay Checkout for plan purchases and wallet recharges (lib/razorpay.ts).
   // Webhook: POST /v1/webhooks/razorpay (events payment.captured, payment.failed), signed with RAZORPAY_WEBHOOK_SECRET.
   PAYMENT_GATEWAY: z.enum(['dev', 'razorpay']).default('dev'),

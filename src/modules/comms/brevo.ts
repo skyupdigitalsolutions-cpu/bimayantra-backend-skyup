@@ -16,17 +16,22 @@ export function toHtml(text: string) {
   return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#1d2b42">${linked.split(/\n{2,}/).map((p) => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('')}</div>`;
 }
 
-export async function sendEmail(to: string, subject: string | null, text: string): Promise<{ id: string }> {
+/** An advisor's own Brevo account (Settings → Integrations). Without it, SkyUp's account from the environment is used. */
+export interface BrevoCreds { apiKey: string; fromEmail: string; fromName: string; replyTo?: string | null }
+
+export async function sendEmail(to: string, subject: string | null, text: string, creds?: BrevoCreds | null): Promise<{ id: string }> {
+  const fromName = creds?.fromName ?? env.EMAIL_FROM_NAME;
+  const replyTo = creds ? creds.replyTo : env.EMAIL_REPLY_TO;
   let res: Response;
   try {
     res = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
-      headers: { 'api-key': env.BREVO_API_KEY ?? '', 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: { 'api-key': creds?.apiKey ?? env.BREVO_API_KEY ?? '', 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
-        sender: { email: env.EMAIL_FROM_ADDRESS, name: env.EMAIL_FROM_NAME },
-        ...(env.EMAIL_REPLY_TO ? { replyTo: { email: env.EMAIL_REPLY_TO } } : {}),
+        sender: { email: creds?.fromEmail ?? env.EMAIL_FROM_ADDRESS, name: fromName },
+        ...(replyTo ? { replyTo: { email: replyTo } } : {}),
         to: [{ email: to }],
-        subject: subject ?? env.EMAIL_FROM_NAME,
+        subject: subject ?? fromName,
         textContent: text,
         htmlContent: toHtml(text),
       }),
@@ -55,5 +60,37 @@ export function brevoEvent(b: Record<string, unknown>) {
     case 'unsubscribed': case 'spam': case 'complaint': return { eventId, type: 'BOUNCE' as const, providerMessageId, address, reason: event === 'unsubscribed' ? 'Unsubscribed' : 'Marked as spam' };
     case 'blocked': case 'error': return { eventId, type: 'STATUS' as const, providerMessageId, status: 'FAILED' as const, reason: reason ?? (event === 'blocked' ? 'Blocked by Brevo' : 'Brevo error') };
     default: return null; // request, deferred, soft_bounce (Brevo retries): no change
+  }
+}
+
+/**
+ * Check an advisor's Brevo key and sender before saving them: the key must open the account, and the sender must be an
+ * active sender there (or on a domain authenticated there).
+ */
+export async function checkBrevo(apiKey: string, fromEmail: string): Promise<{ ok: true; account: string | null } | { ok: false; reason: 'KEY' | 'SENDER' | 'UNREACHABLE'; detail: string }> {
+  const get = async (path: string) => {
+    const res = await fetch(`https://api.brevo.com/v3${path}`, { headers: { 'api-key': apiKey, Accept: 'application/json' } });
+    return { status: res.status, json: (await res.json().catch(() => ({}))) as Record<string, unknown> };
+  };
+  try {
+    const acc = await get('/account');
+    if (acc.status === 401 || acc.status === 403) return { ok: false, reason: 'KEY', detail: String(acc.json.message ?? 'Unauthorized') };
+    if (acc.status === 429 || acc.status >= 500) return { ok: false, reason: 'UNREACHABLE', detail: `Brevo ${acc.status}` };
+    if (acc.status >= 400) return { ok: false, reason: 'KEY', detail: String(acc.json.message ?? `Brevo ${acc.status}`) };
+    const email = fromEmail.trim().toLowerCase();
+    const senders = await get('/senders');
+    const list = (Array.isArray(senders.json.senders) ? senders.json.senders : []) as Array<Record<string, unknown>>;
+    const found = list.some((x) => String(x.email ?? '').toLowerCase() === email && x.active !== false);
+    if (!found) {
+      const domain = email.split('@')[1] ?? '';
+      const doms = await get('/senders/domains');
+      const dl = (Array.isArray(doms.json.domains) ? doms.json.domains : []) as Array<Record<string, unknown>>;
+      if (!dl.some((d) => String(d.domain_name ?? d.domain ?? '').toLowerCase() === domain && (d.authenticated === true || d.verified === true))) {
+        return { ok: false, reason: 'SENDER', detail: `${fromEmail} is not a verified sender` };
+      }
+    }
+    return { ok: true, account: (acc.json.companyName as string | undefined) ?? (acc.json.email as string | undefined) ?? null };
+  } catch (e) {
+    return { ok: false, reason: 'UNREACHABLE', detail: (e as Error).message };
   }
 }

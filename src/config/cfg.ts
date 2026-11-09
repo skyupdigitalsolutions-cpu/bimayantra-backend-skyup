@@ -31,8 +31,8 @@ const DEFS = {
   'CFG-04': { label: 'Wait before resend', unit: 'seconds', value: 30, change: 'ADM', range: [0, 600] },
   'CFG-05': { label: 'OTP sends per mobile in any 60 minutes', unit: 'count', value: 5, change: 'ADM', range: [1, 100] },
   'CFG-06': { label: 'Lock time after CFG-03 or CFG-05 is reached', unit: 'minutes', value: 30, change: 'ADM', range: [1, 1440] },
-  'CFG-07': { label: 'Session ends after no activity for', unit: 'minutes', value: 30, change: 'ADM', range: [3, 1440] },
-  'CFG-08': { label: 'Longest session', unit: 'hours', value: 12, change: 'ADM', range: [1, 72] },
+  'CFG-07': { label: 'Session ends after no activity for', unit: 'minutes', value: 1440, change: 'ADM', range: [3, 1440] }, // 24 hours
+  'CFG-08': { label: 'Longest session', unit: 'hours', value: 24, change: 'ADM', range: [1, 72] }, // stay signed in up to 24 hours
   'CFG-09': { label: 'Active sessions per user', unit: 'count', value: 3, change: 'ADM', range: [1, 20] },
   'CFG-10': { label: 'Registration and login requests per IP address per hour', unit: 'per hour', value: 20, change: 'ADM', range: [1, 100000] },
   'CFG-11': { label: 'Shortest name', unit: 'characters', value: 2, change: 'Release' },

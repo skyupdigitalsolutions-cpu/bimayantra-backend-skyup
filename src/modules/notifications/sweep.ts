@@ -42,6 +42,7 @@ export async function runSweep(now = clock.now()) {
   // SYS-04 greetings once a day after CFG-65; SYS-08 the sender every minute (WhatsApp only inside CFG-64)
   const comms = await import('../comms/comms.service.js');
   await comms.maybeRunGreetings(now);
+  await comms.queueLeadMessages(now); // Message templates: new lead welcome and follow-up, when turned on
   await comms.sendDue(now);
   await comms.syncWhatsAppTemplates(now); // MSG91: Meta's template decisions, every 10 minutes
   // P-45: REF-08 to referrers when a referral's status changes

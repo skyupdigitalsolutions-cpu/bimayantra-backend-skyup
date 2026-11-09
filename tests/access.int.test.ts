@@ -152,6 +152,7 @@ describe('P-03 Sessions', () => {
   });
 
   it('AC-P03-1: no activity for CFG-07 ends the session (AUTH-18)', async () => {
+    await setCfg('CFG-07', 30); // the default is 24 hours; a shorter idle limit set by an admin still applies
     const adv = await registerAdvisor();
     clock.setOffset(31 * 60_000);
     expect(err(await as(adv.token).get('/auth/me'))).toMatchObject({ status: 401, messageId: 'AUTH-18' });
