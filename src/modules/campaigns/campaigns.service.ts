@@ -22,6 +22,14 @@ import { Task } from '../tasks/task.model.js';
 import { User } from '../users/user.model.js';
 import { Connection, LeadForm, Submission, type Channel, type ConnectionDoc, type FormDoc, type SubmissionDoc } from './campaign.model.js';
 
+/** Connect-form details shared by every channel (see campaign.model.ts). */
+export type ConnDetails = { defaultStatus?: 'NEW' | 'CONTACTED' | 'QUALIFIED' | 'FOLLOW_UP'; adSetName?: string | null; parentCampaign?: string | null; category?: string | null };
+type ConnExtras = { defaultStatus?: string; adSetName?: string | null; parentCampaign?: string | null; category?: string | null; contactPageUrl?: string | null; campaignFilter?: string[] };
+const extrasOf = (c: ConnectionDoc) => c as ConnectionDoc & ConnExtras;
+const cleanIds = (v?: string[]) => [...new Set((v ?? []).map((x) => x.trim()).filter(Boolean))];
+/** Only the details given are set (undefined = unchanged, null/blank = cleared). */
+const detailSet = (b: ConnDetails) => Object.fromEntries((['defaultStatus', 'adSetName', 'parentCampaign', 'category'] as const).filter((k) => b[k] !== undefined).map((k) => [k, b[k] ?? (k === 'defaultStatus' ? 'NEW' : null)]));
+
 /** Lead source of an imported lead, by channel (stable codes, lib/leadSources.ts). */
 const SOURCE: Record<Channel, LeadSourceCode> = { WEBSITE: 'WEBSITE_FORM', GOOGLE: 'GOOGLE_ADS', META: 'META_ADS', LINKEDIN: 'LINKEDIN_ADS' };
 const LABEL: Record<Channel, string> = { WEBSITE: 'Website form', GOOGLE: 'Google Ads', META: 'Meta Ads', LINKEDIN: 'LinkedIn' };
@@ -46,6 +54,8 @@ const view = (c: ConnectionDoc) => ({
   id: c._id, channel: c.channel, name: c.name, status: c.status, keyLast4: c.keyLast4, pipelineId: c.pipelineId, lastLeadAt: c.lastLeadAt, createdAt: c.createdAt,
   mode: (c as { mode?: string }).mode ?? 'OAUTH', formFilter: (c as { formFilter?: string[] }).formFilter ?? [], lastError: c.lastError ?? null,
   webhookUrl: (c as { mode?: string }).mode === 'MANUAL' ? manualHookUrl(c) : hookUrl(c),
+  defaultStatus: extrasOf(c).defaultStatus ?? 'NEW', adSetName: extrasOf(c).adSetName ?? null, parentCampaign: extrasOf(c).parentCampaign ?? null,
+  category: extrasOf(c).category ?? null, contactPageUrl: extrasOf(c).contactPageUrl ?? null, campaignFilter: extrasOf(c).campaignFilter ?? [],
 });
 const manualHookUrl = (c: ConnectionDoc) => `${process.env.PUBLIC_API_URL ?? 'http://localhost:4000'}/v1/hooks/${c.channel === 'META' ? 'meta' : 'linkedin'}/c/${c._id}`;
 /** Manual connections may limit which forms are imported (Meta form ID, or a LinkedIn lead-form URN inside the versioned URN). */
@@ -53,12 +63,46 @@ const formAllowed = (c: ConnectionDoc, formId: string) => { const f = (c as { fo
 
 
 /** + Website form / + Google Ads: the key is in the answer once (CMP-02). Meta and LinkedIn connect by sign-in (later). */
-export async function connect(ctx: AuthContext, b: { channel: 'WEBSITE' | 'GOOGLE'; name: string; pipelineId?: string | null }, req: Request) {
+export async function connect(ctx: AuthContext, b: ConnDetails & {
+  channel: 'WEBSITE' | 'GOOGLE'; name: string; pipelineId?: string | null;
+  key?: string | null; contactPageUrl?: string | null; campaignIds?: string[]; formIds?: string[];
+}, req: Request) {
   if (!channelOn(b.channel, ctx.accountId!)) throw new AppError(409, 'INVALID_STATE', 'CMP-08', { channel: LABEL[b.channel] });
-  const key = newKey(b.channel);
-  const c = await Connection.create({ accountId: ctx.accountId, channel: b.channel, name: b.name, keyHash: hashKey(key), keyLast4: key.slice(-4), pipelineId: b.pipelineId ?? null, createdBy: ctx.userId });
-  await audit({ entity: 'campaign', entityId: c._id, action: 'CAMPAIGN_CONNECTED', after: { channel: b.channel, name: b.name } }, { req });
+  // The advisor may set their own key (Google Ads asks for one); it must not open anyone else's connection.
+  const own = (b.key ?? '').trim();
+  const key = own || newKey(b.channel);
+  if (own && await Connection.exists({ $or: [{ keyHash: hashKey(own) }, { prevKeyHash: hashKey(own) }] })) throw AppError.field('key', 'CMP-24');
+  const google = b.channel === 'GOOGLE';
+  let c;
+  try {
+    c = await Connection.create({
+      accountId: ctx.accountId, channel: b.channel, name: b.name, keyHash: hashKey(key), keyLast4: key.slice(-4), pipelineId: b.pipelineId ?? null, createdBy: ctx.userId,
+      ...detailSet(b),
+      contactPageUrl: b.channel === 'WEBSITE' ? b.contactPageUrl ?? null : null,
+      campaignFilter: google ? cleanIds(b.campaignIds) : [], formFilter: google ? cleanIds(b.formIds) : [],
+    });
+  } catch (e) { if (isDuplicateKey(e)) throw AppError.field('key', 'CMP-24'); throw e; }
+  await audit({ entity: 'campaign', entityId: c._id, action: 'CAMPAIGN_CONNECTED', after: { channel: b.channel, name: b.name, ownKey: !!own, defaultStatus: b.defaultStatus ?? 'NEW' } }, { req });
   return { connection: view(c.toObject() as ConnectionDoc), key };
+}
+
+/** Edit a connection's details: name, pipeline, starting status, campaign labels, website page, Google filters. */
+export async function saveSettings(ctx: AuthContext, id: string, b: ConnDetails & {
+  name?: string; pipelineId?: string | null; contactPageUrl?: string | null; campaignIds?: string[]; formIds?: string[];
+}, req: Request) {
+  const c = await loadConn(ctx, id);
+  const manual = (c as { mode?: string }).mode === 'MANUAL';
+  if (b.contactPageUrl !== undefined && c.channel !== 'WEBSITE') throw AppError.field('contactPageUrl', 'VAL-22');
+  if (b.campaignIds !== undefined && c.channel !== 'GOOGLE') throw AppError.field('campaignIds', 'VAL-22');
+  if (b.formIds !== undefined && !(c.channel === 'GOOGLE' || manual)) throw AppError.field('formIds', 'VAL-22');
+  const set: Record<string, unknown> = {
+    ...(b.name ? { name: b.name } : {}), ...(b.pipelineId !== undefined ? { pipelineId: b.pipelineId } : {}), ...detailSet(b),
+    ...(b.contactPageUrl !== undefined ? { contactPageUrl: b.contactPageUrl } : {}),
+    ...(b.campaignIds !== undefined ? { campaignFilter: cleanIds(b.campaignIds) } : {}), ...(b.formIds !== undefined ? { formFilter: cleanIds(b.formIds) } : {}),
+  };
+  if (Object.keys(set).length) await Connection.updateOne({ _id: id }, { $set: set });
+  await audit({ entity: 'campaign', entityId: id, action: 'CAMPAIGN_SETTINGS_SAVED', after: Object.keys(set) }, { req });
+  return view((await Connection.findById(id).lean<ConnectionDoc>())!);
 }
 async function loadConn(ctx: AuthContext, id: string) { const c = await Connection.findOne({ _id: id, accountId: ctx.accountId }).lean<ConnectionDoc>(); if (!c) throw AppError.notFound(); return c; }
 export async function rotateKey(ctx: AuthContext, id: string, req: Request) {
@@ -151,6 +195,13 @@ export async function processSubmission(id: string): Promise<SubmissionDoc> {
     if (!conn || !acc) return done('FAILED', { reason: 'Connection removed' });
     if (s.isTest) return done('SKIPPED', { reason: 'Test lead · not counted' });
     if (form && !form.active) return done('SKIPPED', { reason: 'Form switched off' });
+    // Google filters set on the connection: other campaigns / forms are kept (SKIPPED with the reason) so a changed filter + Retry imports them
+    if (conn.channel === 'GOOGLE') {
+      const cf = extrasOf(conn).campaignFilter ?? []; const ff = (conn as { formFilter?: string[] }).formFilter ?? [];
+      const cid = String((s.meta as { campaignId?: unknown }).campaignId ?? '');
+      if (cf.length && !cf.includes(cid)) return done('SKIPPED', { reason: `Campaign ${cid || '(none)'} is not in this connection's campaign filter` });
+      if (ff.length && form && !ff.includes(form.externalId)) return done('SKIPPED', { reason: `Form ${form.externalId} is not in this connection's form filter` });
+    }
     // Kept as FAILED (not lost): Retry imports it once the channel is switched on for the account.
     if (!channelOn(conn.channel as Channel, s.accountId)) return done('FAILED', { reason: `${LABEL[conn.channel as Channel]} is not switched on for this account` });
     if (acc.status !== 'ACTIVE') return done('FAILED', { reason: acc.status === 'SUSPENDED' ? 'Account suspended' : 'Account closed' });
@@ -165,14 +216,17 @@ export async function processSubmission(id: string): Promise<SubmissionDoc> {
     const pipelineId = form?.pipelineId ?? conn.pipelineId ?? [...acc.pipelines].sort((x, y) => (x.position ?? 0) - (y.position ?? 0))[0]?._id;
     const adv = await User.findOne({ accountId: s.accountId, role: 'ADV' }, { _id: 1 }).lean<{ _id: string }>();
     const name = m.name || `${LABEL[conn.channel as Channel]} lead`;
-    const campaign = form?.campaignName ?? (s.meta as { campaignName?: string }).campaignName ?? form?.name ?? null;
+    const x = extrasOf(conn);
+    const connCampaign = [x.parentCampaign, x.adSetName].filter(Boolean).join(' · ') || null;
+    const campaign = form?.campaignName ?? (s.meta as { campaignName?: string }).campaignName ?? connCampaign ?? form?.name ?? null;
+    const startStatus = (x.defaultStatus ?? 'NEW') as 'NEW' | 'CONTACTED' | 'QUALIFIED' | 'FOLLOW_UP';
     const leadId = await withTx(async (session) => {
       const number = await nextNumber(s.accountId, 'lead', session);
       const now = clock.now();
       const [lead] = await Lead.create([{ accountId: s.accountId, number, pipelineId, name, nameKey: name.toLowerCase().replace(/\s+/g, ' '), mobile: m.mobile, email: m.email,
         source: sourceLabel(SOURCE[conn.channel as Channel]), sourceCode: SOURCE[conn.channel as Channel], campaign, adRef: { channel: conn.channel, connectionId: conn._id, formId: s.formId, externalId: s.externalId, submissionId: s._id },
-        notes: m.city ? `City: ${m.city}` : null, status: 'NEW', isOpen: true, createdBy: adv?._id ?? 'SYSTEM', nextFollowUpAt: new Date(now.getTime() + cfgNum('CFG-195') * 60_000),
-        stageHistory: [{ from: null, to: 'NEW', by: adv?._id ?? 'SYSTEM', at: now }] }], { session: session ?? undefined });
+        notes: m.city ? `City: ${m.city}` : null, status: startStatus, isOpen: true, createdBy: adv?._id ?? 'SYSTEM', nextFollowUpAt: new Date(now.getTime() + cfgNum('CFG-195') * 60_000),
+        stageHistory: [{ from: null, to: startStatus, by: adv?._id ?? 'SYSTEM', at: now }] }], { session: session ?? undefined });
       if (m.consent) await Consent.create([{ accountId: s.accountId, personKey: `L:${lead!._id}`, channel: 'WHATSAPP', status: 'GIVEN', address: m.mobile, howGiven: conn.channel === 'WEBSITE' ? 'Website form tick' : 'Ad form tick', recordedBy: adv?._id ?? 'SYSTEM', recordedAt: now }], { session: session ?? undefined });
       await Task.create([{ accountId: s.accountId, kind: 'LEAD_FOLLOW_UP', title: `Call ${name} (new ${LABEL[conn.channel as Channel]} lead)`, dueAt: new Date(now.getTime() + cfgNum('CFG-195') * 60_000), linkedType: 'LEAD', linkedId: lead!._id, createdBy: adv?._id ?? null }], { session: session ?? undefined });
       return lead!._id as string;
@@ -541,7 +595,7 @@ const ownedElsewhere = async (accountId: string, channel: 'META' | 'LINKEDIN', s
  * (and, for Meta, the verify token) to paste into their app — shown once.
  * One Page / ad account belongs to one Bimayantra account (CMP-21): leads never land in two advisors' pipelines.
  */
-export async function connectManual(ctx: AuthContext, b: {
+export async function connectManual(ctx: AuthContext, b: ConnDetails & {
   channel: 'META' | 'LINKEDIN'; name: string; pipelineId?: string | null; formIds?: string[];
   pageId?: string; pageToken?: string; appSecret?: string; verifyToken?: string | null;
   accountUrn?: string; accessToken?: string; clientSecret?: string;
@@ -549,7 +603,7 @@ export async function connectManual(ctx: AuthContext, b: {
   if (!channelOn(b.channel, ctx.accountId!)) throw new AppError(409, 'INVALID_STATE', 'CMP-08', { channel: LABEL[b.channel] });
   const sourceId = b.channel === 'META' ? String(b.pageId ?? '').trim() : String(b.accountUrn ?? '').trim();
   if (await ownedElsewhere(ctx.accountId!, b.channel, sourceId)) throw new AppError(409, 'DUPLICATE', 'CMP-21', { channel: LABEL[b.channel] });
-  const conn = new Connection({ accountId: ctx.accountId, channel: b.channel, name: b.name, pipelineId: b.pipelineId ?? null, createdBy: ctx.userId, mode: 'MANUAL', formFilter: (b.formIds ?? []).map((x) => x.trim()).filter(Boolean) });
+  const conn = new Connection({ accountId: ctx.accountId, channel: b.channel, name: b.name, pipelineId: b.pipelineId ?? null, createdBy: ctx.userId, mode: 'MANUAL', formFilter: (b.formIds ?? []).map((x) => x.trim()).filter(Boolean), ...detailSet(b) });
   let verifyToken: string | null = null;
   if (b.channel === 'META') {
     let page;

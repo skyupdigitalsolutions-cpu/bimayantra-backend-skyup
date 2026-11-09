@@ -205,4 +205,4 @@ describe('SkyUp: brochure reading on a verified draft', () => {
     expect(v.data.details).toEqual({ maxVehicleAgeYears: 12, coverTypes: ['Comprehensive'] }); // merged, not replaced
     expect(v.data.features.own_damage!.value).toBe(true);
   });
-});
+});  

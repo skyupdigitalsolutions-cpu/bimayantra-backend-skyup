@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
 import { allow, writable } from '../../middleware/authorize.js';
 import { validate } from '../../middleware/validate.js';
-import { enumOf, optional, required, shortText } from '../../lib/fields.js';
+import { enumOf, optional, required, shortText, webAddress } from '../../lib/fields.js';
+import { START_STATUSES } from './campaign.model.js';
 import { sendData, sendDone } from '../../lib/response.js';
 import * as svc from './campaigns.service.js';
 import * as apps from './platformApps.js';
@@ -13,6 +14,16 @@ import { AppError } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
 
 const cnx = z.object({ id: z.string().regex(/^cnx_[a-f0-9]{28}$/) });
+/** Connect-form details any channel may carry (all optional; blank clears on edit). */
+const details = {
+  defaultStatus: enumOf(START_STATUSES).optional(),
+  adSetName: optional(shortText()), parentCampaign: optional(shortText()), category: optional(shortText()),
+};
+/** Platform IDs typed by the advisor (Google campaign / form IDs). */
+const extIds = z.array(z.string().trim().regex(/^[A-Za-z0-9_-]{1,40}$/, 'VAL-22')).max(50).optional();
+/** The advisor's own webhook key (Google Ads "Key" / website secret); blank = we make one. */
+const ownKey = optional(z.string().trim().regex(/^[A-Za-z0-9_-]{16,100}$/, 'CMP-25'));
+const detailLabels = { name: 'Name', key: 'Webhook key', contactPageUrl: 'Contact page URL', adSetName: 'Ad set name', parentCampaign: 'Parent campaign', category: 'Category', defaultStatus: 'Default status' };
 
 /** Campaigns (Module 17): the advisor connects channels and maps forms; assistants see the sync log and form answers. */
 export function campaignRoutes() {
@@ -23,20 +34,28 @@ export function campaignRoutes() {
   // Own-app (manual) Meta / LinkedIn connection: the advisor's Page / ad account and token (CMP-21 if another account has it)
   const ids = z.array(z.string().trim().min(1).max(200)).max(50).optional();
   r.post('/connections/manual', ...m, validate({ body: z.discriminatedUnion('channel', [
-    z.object({ channel: z.literal('META'), name: required(shortText()), pipelineId: z.string().max(40).nullable().optional(), formIds: ids,
+    z.object({ channel: z.literal('META'), name: required(shortText()), pipelineId: z.string().max(40).nullable().optional(), formIds: ids, ...details,
       pageId: required(z.string().trim().regex(/^\d{5,25}$/, 'VAL-22')), pageToken: required(z.string().trim().min(20).max(1000)), appSecret: required(z.string().trim().min(16).max(200)), verifyToken: z.string().trim().max(200).nullable().optional() }).strict(),
-    z.object({ channel: z.literal('LINKEDIN'), name: required(shortText()), pipelineId: z.string().max(40).nullable().optional(), formIds: ids,
+    z.object({ channel: z.literal('LINKEDIN'), name: required(shortText()), pipelineId: z.string().max(40).nullable().optional(), formIds: ids, ...details,
       accountUrn: required(z.string().trim().regex(/^urn:li:(sponsoredAccount|organization):\d+$/, 'VAL-22')), accessToken: required(z.string().trim().min(20).max(2000)), clientSecret: required(z.string().trim().min(8).max(200)) }).strict(),
-  ]) }, { name: 'Name', pageId: 'Page ID', pageToken: 'Page access token', appSecret: 'App secret', accountUrn: 'Ad account or organization URN', accessToken: 'Access token', clientSecret: 'Client secret' }), async (req, res) =>
+  ]) }, { ...detailLabels, pageId: 'Page ID', pageToken: 'Page access token', appSecret: 'App secret', accountUrn: 'Ad account or organization URN', accessToken: 'Access token', clientSecret: 'Client secret' }), async (req, res) =>
     sendData(res, await svc.connectManual(req.auth!, req.body, req), 201));
   r.put('/connections/:id/manual', ...m, validate({ params: z.object({ id: z.string().regex(/^cnx_[a-f0-9]{28}$/) }), body: z.object({
     name: shortText().optional(), formIds: ids, pageToken: z.string().trim().min(20).max(1000).optional(), appSecret: z.string().trim().min(16).max(200).optional(),
     accessToken: z.string().trim().min(20).max(2000).optional(), clientSecret: z.string().trim().min(8).max(200).optional() }).strict() }), async (req, res) =>
     sendData(res, await svc.updateManual(req.auth!, String(req.params.id), req.body, req)));
-  r.post('/connections', ...m, validate({ body: z.object({ channel: required(enumOf(['WEBSITE', 'GOOGLE'] as const)), name: required(shortText()), pipelineId: z.string().max(40).nullable().optional() }).strict() }, { channel: 'Channel', name: 'Name' }), async (req, res) => {
+  r.post('/connections', ...m, validate({ body: z.object({
+    channel: required(enumOf(['WEBSITE', 'GOOGLE'] as const)), name: required(shortText()), pipelineId: z.string().max(40).nullable().optional(),
+    ...details, key: ownKey, contactPageUrl: optional(webAddress()), campaignIds: extIds, formIds: extIds,
+  }).strict() }, { channel: 'Channel', ...detailLabels }), async (req, res) => {
     const out = await svc.connect(req.auth!, req.body, req);
     sendDone(res, out, 'CMP-02', {}, 201);
   });
+  // Edit a connection's details later (any channel, including Meta / LinkedIn connected by sign-in)
+  r.put('/connections/:id/settings', ...m, validate({ params: cnx, body: z.object({
+    name: shortText().optional(), pipelineId: z.string().max(40).nullable().optional(),
+    ...details, contactPageUrl: optional(webAddress()), campaignIds: extIds, formIds: extIds,
+  }).strict() }, detailLabels), async (req, res) => sendDone(res, await svc.saveSettings(req.auth!, String(req.params.id), req.body, req), 'CMP-26'));
   r.post('/connections/:id/rotate-key', ...m, validate({ params: cnx }), async (req, res) => sendDone(res, await svc.rotateKey(req.auth!, String(req.params.id), req), 'CMP-03'));
   r.post('/connections/:id/disconnect', ...m, validate({ params: cnx }), async (req, res) => { const out = await svc.setStatus(req.auth!, String(req.params.id), false, req); sendDone(res, out.connection, 'CMP-04', out.params); });
   r.post('/connections/:id/reconnect', ...m, validate({ params: cnx }), async (req, res) => sendData(res, (await svc.setStatus(req.auth!, String(req.params.id), true, req)).connection));

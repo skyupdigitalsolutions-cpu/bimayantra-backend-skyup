@@ -37,7 +37,7 @@ export async function linkCampaign(s: SubmissionDoc) {
   await Submission.updateOne({ _id: s._id }, { $set: { adCampaignId: camp._id, adCreativeId: creativeId } });
 }
 
-type Row = { id: string; kind: 'CAMPAIGN' | 'FORM'; channel: string; name: string; status: string; statusReason: string | null; connectionId: string; leads: number; newToday: number; converted: number; lastLeadAt: Date | null; spend?: number | null; currency?: string | null; costPerLead?: number | null; spendSyncedAt?: Date | null; startedOn?: string | null };
+type Row = { id: string; kind: 'CAMPAIGN' | 'FORM'; channel: string; name: string; category?: string | null; status: string; statusReason: string | null; connectionId: string; leads: number; newToday: number; converted: number; lastLeadAt: Date | null; spend?: number | null; currency?: string | null; costPerLead?: number | null; spendSyncedAt?: Date | null; startedOn?: string | null };
 
 async function counts(accountId: string, match: Record<string, unknown>) {
   const subs = await Submission.find({ accountId, status: { $in: LEAD_STATES }, ...match }, { leadId: 1, createdAt: 1 }).lean<Array<{ leadId: string | null; createdAt: Date }>>();
@@ -51,12 +51,13 @@ const connStatus = (c: ConnectionDoc | undefined) => (c && c.status === 'CONNECT
 async function campaignRow(ctx: AuthContext, c: AdCampaignDoc, conn: ConnectionDoc | undefined): Promise<Row> {
   const k = await counts(c.accountId, { adCampaignId: c._id });
   const row: Row = { id: c._id, kind: 'CAMPAIGN', channel: c.channel, name: c.name ?? `Campaign ${c.externalCampaignId}`, status: connStatus(conn) ?? c.platformStatus ?? 'NOT_SYNCED_YET', statusReason: connStatus(conn) ? (conn?.status === 'RECONNECT_NEEDED' ? 'Sign in again to sync' : 'Disconnected') : (c.statusReason ?? null), connectionId: c.connectionId, ...k, startedOn: c.startedOn ?? null };
+  row.category = (conn as { category?: string | null } | undefined)?.category ?? null;
   if (can(ctx.role, 'campaigns.spend')) Object.assign(row, { spend: c.spendAmount ?? null, currency: c.spendCurrency ?? null, costPerLead: c.spendAmount !== null && c.spendAmount !== undefined && k.leads ? Math.round((c.spendAmount / k.leads) * 100) / 100 : null, spendSyncedAt: c.spendSyncedAt ?? null });
   return row;
 }
 async function formRow(f: FormDoc, conn: ConnectionDoc | undefined): Promise<Row> {
   const k = await counts(f.accountId, { formId: f._id });
-  return { id: f._id, kind: 'FORM', channel: f.channel, name: f.campaignName ?? f.name, status: connStatus(conn) ?? (f.active ? 'ACTIVE' : 'TURNED_OFF'), statusReason: null, connectionId: f.connectionId, ...k };
+  return { id: f._id, kind: 'FORM', channel: f.channel, name: f.campaignName ?? f.name, category: (conn as { category?: string | null } | undefined)?.category ?? null, status: connStatus(conn) ?? (f.active ? 'ACTIVE' : 'TURNED_OFF'), statusReason: null, connectionId: f.connectionId, ...k };
 }
 
 /** GET /campaigns: one row per platform campaign (Meta, Google) or form (website, LinkedIn); filter by channel and status. */

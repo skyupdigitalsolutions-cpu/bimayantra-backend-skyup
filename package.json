@@ -24,6 +24,7 @@
     "db:migrate:pending-approvals": "tsx --env-file=.env src/scripts/migrate-pending-approvals.ts",
     "db:migrate:encrypt-pii": "tsx --env-file=.env src/scripts/migrate-encrypt-pii.ts",
     "catalogue:seed-templates": "tsx --env-file=.env src/scripts/seed-category-templates.ts",
+    "catalogue:import": "tsx --env-file=.env src/scripts/import-catalogue.ts",
     "start:prod": "node dist/server.js"
   },
   "dependencies": {
@@ -31,6 +32,7 @@
     "cloudinary": "2.11.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
+    "exceljs": "4.4.0",
     "express": "^5.2.1",
     "helmet": "^8.3.0",
     "ioredis": "^5.11.1",

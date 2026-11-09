@@ -123,6 +123,10 @@ export const MESSAGES = {
   'CMP-21': 'This {channel} Page or ad account is already connected to another Bimayantra account. Leads can go to one account only.',
   'CMP-22': 'The platform did not accept these details: {reason}',
   'CMP-23': 'The Page could not be subscribed to lead notifications: {reason}. Check the token has leads_retrieval and pages_manage_metadata.',
+  // ── Connect-form details (default status, campaign labels, filters, own webhook key) ──
+  'CMP-24': 'This key is already used by another connection. Choose a different key.',
+  'CMP-25': 'Use 16 to 100 letters, digits, hyphens or underscores, with no spaces.',
+  'CMP-26': 'Connection settings saved.',
   // ── Stage D (change analysis #18, #21, #23, #25) ──
   'DSH-26': 'Follow-up overdue: {name} was due {time}.',
   'CAT-41': 'New in the catalogue: {product} by {insurer}.',

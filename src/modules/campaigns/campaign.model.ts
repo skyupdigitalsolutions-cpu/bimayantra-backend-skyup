@@ -3,6 +3,8 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
 import { newId } from '../../lib/ids.js';
 
 export const CHANNELS = ['WEBSITE', 'GOOGLE', 'META', 'LINKEDIN'] as const;
+/** The lead statuses an imported lead may start in (an open pipeline stage; FOLLOW_UP uses the usual first-call time). */
+export const START_STATUSES = ['NEW', 'CONTACTED', 'QUALIFIED', 'FOLLOW_UP'] as const;
 export type Channel = (typeof CHANNELS)[number];
 
 /**
@@ -32,8 +34,14 @@ const connectionSchema = new Schema(
      */
     mode: { type: String, enum: ['OAUTH', 'MANUAL'], default: 'OAUTH' },
     appSecretEnc: { type: String, default: null }, verifyTokenEnc: { type: String, default: null },
-    /** Only these forms are imported (Meta form IDs / LinkedIn lead-form URNs); empty = every form. */
+    /** Only these forms are imported (Meta form IDs / LinkedIn lead-form URNs / Google form IDs); empty = every form. */
     formFilter: { type: [String], default: [] },
+    /** Google: only leads from these campaign IDs are imported; empty = every campaign. Others are kept as SKIPPED. */
+    campaignFilter: { type: [String], default: [] },
+    /** Connect-form details: the status new leads start in, labels for the campaign, and the website's contact page. */
+    defaultStatus: { type: String, enum: START_STATUSES, default: 'NEW' },
+    adSetName: { type: String, default: null }, parentCampaign: { type: String, default: null }, category: { type: String, default: null },
+    contactPageUrl: { type: String, default: null },
   },
   { timestamps: true, versionKey: false },
 );
