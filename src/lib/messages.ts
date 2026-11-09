@@ -304,6 +304,7 @@ export const MESSAGES = {
   'CAT-49': 'Add up to {n} variants.',
   'CAT-50': '{name} is already in your list.',
   'CAT-51': 'Each feature of your own needs a different name.',
+  'CAT-52': '{name} is already a SkyUp category. Choose it from the list instead of creating your own.',
   // ── Stage G: quotations [NOT IN BPD YET: add to Section 21] (changes #2, #8 to #16) ──
   'QT-45': 'Record the payment before marking this quotation accepted.',
   'QT-46': '{variant} covers a sum insured from {min} to {max}.',

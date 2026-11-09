@@ -184,6 +184,9 @@ export async function rank(ctx: AuthContext, customerId: string, b: RankBody, re
   return { rankingId: log._id, weights: w, results, summary, ...message };
 }
 
+/** Usual sum insured amounts offered inside a range (₹1 lakh … ₹10 crore). */
+const SI_STEPS = [100000, 200000, 300000, 500000, 700000, 1000000, 1500000, 2000000, 2500000, 5000000, 7500000, 10000000, 20000000, 50000000, 100000000];
+
 /** The sum insured options on offer for a type (question c), and the people who can be covered. */
 export async function options(ctx: AuthContext, customerId: string, typeId: string) {
   const c = await Customer.findOne({ _id: customerId, accountId: ctx.accountId }, { name: 1, dob: 1 }).lean<{ _id: string; name: string; dob: string | null }>();
@@ -191,11 +194,26 @@ export async function options(ctx: AuthContext, customerId: string, typeId: stri
   const fam = await FamilyMember.find({ customerId, accountId: ctx.accountId, status: 'ACTIVE' }, { name: 1, dob: 1, relationship: 1 }).lean<Array<{ _id: string; name: string; dob: string | null; relationship: string }>>();
   const prods = await Product.find({ typeId, $or: [{ kind: 'VERIFIED', status: 'ACTIVE' }, { kind: 'OWN', accountId: ctx.accountId }] }, { publishedVersionId: 1 }).lean<Array<{ publishedVersionId: string | null }>>();
   const versions = await ProductVersion.find({ _id: { $in: prods.map((p) => p.publishedVersionId).filter(Boolean) } }, { data: 1 }).lean<Array<{ data: ProductData }>>();
-  const si = [...new Set(versions.flatMap((v) => v.data?.sumInsured?.options ?? []))].sort((a, b) => a - b);
+  // Products give sum insured as a list of options or as a range (min–max). A range offers the usual steps inside it,
+  // plus its own ends, so range-only products (Motor IDV, Term Life, most own products) are not left out.
+  const si = new Set<number>();
+  const ranges: Array<{ min: number; max: number }> = [];
+  for (const v of versions) {
+    const s = v.data?.sumInsured ?? {};
+    for (const o of s.options ?? []) si.add(o);
+    if (s.min && s.max) {
+      ranges.push({ min: s.min, max: s.max });
+      si.add(s.min); si.add(s.max);
+      for (const step of SI_STEPS) if (step >= s.min && step <= s.max) si.add(step);
+    }
+  }
   void cfgRange; void cfgNum;
   return {
     people: [{ key: `C:${c._id}`, name: c.name, relationship: 'Self', hasDob: !!c.dob }, ...fam.map((f) => ({ key: `F:${f._id}`, name: f.name, relationship: f.relationship, hasDob: !!f.dob }))],
-    sumInsuredOptions: si, priorities: PRIORITIES,
+    sumInsuredOptions: [...si].sort((a, b) => a - b),
+    // any amount inside one of these can be ranked too (for a typed amount)
+    sumInsuredRange: ranges.length ? { min: Math.min(...ranges.map((r) => r.min)), max: Math.max(...ranges.map((r) => r.max)) } : null,
+    priorities: PRIORITIES,
   };
 }
 

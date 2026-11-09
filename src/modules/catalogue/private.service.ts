@@ -56,6 +56,8 @@ export async function addInsurer(ctx: AuthContext, b: { name: string }, req: Req
 export async function addCategory(ctx: AuthContext, b: { name: string; productForm?: ProductFormCode | null }, req: Request) {
   const name = b.name.trim();
   const productForm = b.productForm ?? guessProductForm(name);
+  // A private "Health" next to SkyUp's Health shows two Health tabs, one with no features or products: refused
+  if (await InsuranceType.exists({ ownerAccountId: null, nameKey: name.toLowerCase() })) throw AppError.field('name', 'CAT-52', { name });
   try {
     return await withTx(async (session) => {
       const [t] = await InsuranceType.create([{ name, nameKey: name.toLowerCase(), ownerAccountId: ctx.accountId, status: 'ACTIVE', productForm }], { session: session ?? undefined });

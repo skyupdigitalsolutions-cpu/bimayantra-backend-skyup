@@ -25,6 +25,7 @@
     "db:migrate:encrypt-pii": "tsx --env-file=.env src/scripts/migrate-encrypt-pii.ts",
     "catalogue:seed-templates": "tsx --env-file=.env src/scripts/seed-category-templates.ts",
     "catalogue:import": "tsx --env-file=.env src/scripts/import-catalogue.ts",
+    "demo:agent-codes": "tsx --env-file=.env src/scripts/demo-agent-codes.ts",
     "start:prod": "node dist/server.js"
   },
   "dependencies": {
