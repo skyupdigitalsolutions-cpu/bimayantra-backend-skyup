@@ -10,6 +10,7 @@
  *  - Names are unique per owner, so a private name may match a library one (the advisor did not find it there).
  *    SkyUp merging a private insurer into a library one is not built (Q101).
  */
+import { categoryKey } from './categoryNames.js';
 import type { Request } from 'express';
 import { AppError } from '../../lib/errors.js';
 import { isDuplicateKey, withTx } from '../../lib/mongo.js';
@@ -17,7 +18,9 @@ import { audit } from '../audit/audit.service.js';
 import { Insurer, type InsurerDoc } from '../insurers/insurer.model.js';
 import type { AuthContext } from '../rbac/capabilities.js';
 import { InsuranceType, TemplateVersion, type InsuranceTypeDoc } from './types.model.js';
-import { guessProductForm, type ProductFormCode } from './productForms.js';
+import { formOfType, guessProductForm, type ProductFormCode } from './productForms.js';
+import { Product, ProductVersion } from './product.model.js';
+import { Policy } from '../policies/policy.model.js';
 
 /** Owner filter: the SkyUp library plus this account's private items. */
 export const visibleTo = (accountId: string | null | undefined) => ({ ownerAccountId: { $in: [null, ...(accountId ? [accountId] : [])] } });
@@ -56,8 +59,14 @@ export async function addInsurer(ctx: AuthContext, b: { name: string }, req: Req
 export async function addCategory(ctx: AuthContext, b: { name: string; productForm?: ProductFormCode | null }, req: Request) {
   const name = b.name.trim();
   const productForm = b.productForm ?? guessProductForm(name);
-  // A private "Health" next to SkyUp's Health shows two Health tabs, one with no features or products: refused
-  if (await InsuranceType.exists({ ownerAccountId: null, nameKey: name.toLowerCase() })) throw AppError.field('name', 'CAT-52', { name });
+  // A private "Health" next to SkyUp's Health shows two Health tabs, one with no features or products: refused.
+  // Compared by meaning, not exact text: "health insurance", "Health  Cover" and "HEALTH" are all Health.
+  const key = categoryKey(name);
+  if (!key) throw AppError.field('name', 'GEN-01', { 'Field label': 'Category name' });
+  const existing = await InsuranceType.find({ $or: [{ ownerAccountId: null, status: 'ACTIVE' }, { ownerAccountId: ctx.accountId }] }, { name: 1, ownerAccountId: 1 }).lean<Array<{ name: string; ownerAccountId: string | null }>>();
+  const same = existing.find((t) => categoryKey(t.name) === key);
+  if (same && !same.ownerAccountId) throw AppError.field('name', 'CAT-52', { name: same.name });
+  if (same) throw AppError.field('name', 'CAT-50', { name: same.name });
   try {
     return await withTx(async (session) => {
       const [t] = await InsuranceType.create([{ name, nameKey: name.toLowerCase(), ownerAccountId: ctx.accountId, status: 'ACTIVE', productForm }], { session: session ?? undefined });
@@ -77,4 +86,40 @@ export async function insurerChoices(ctx: AuthContext, q?: string) {
   if (q) f.nameKey = { $regex: q.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') };
   const rows = await Insurer.find(f, { name: 1, category: 1, ownerAccountId: 1 }).sort({ name: 1 }).limit(200).lean<Array<Pick<InsurerDoc, '_id' | 'name' | 'category' | 'ownerAccountId'>>>();
   return rows.map((i) => ({ id: i._id, name: i.name, category: i.category ?? null, private: !!i.ownerAccountId }));
+}
+
+/**
+ * One-off clean-up: a private category that means the same as a SkyUp category (a private "Health" next to SkyUp's
+ * Health, made before duplicates were refused) is merged into the SkyUp one. Its products move to the SkyUp category
+ * and follow SkyUp's live feature template (values the private template did not have show as "Not stated" until
+ * edited); policies recorded under it move too; the private category is switched off. Dry run unless apply.
+ *   npm run catalogue:merge-duplicates            # report only
+ *   npm run catalogue:merge-duplicates -- --apply # write
+ */
+export async function mergeDuplicateCategories(opts: { apply: boolean }) {
+  const skyup = await InsuranceType.find({ ownerAccountId: null, status: 'ACTIVE' }).lean<InsuranceTypeDoc[]>();
+  const byKey = new Map(skyup.map((t) => [categoryKey(t.name), t]));
+  const priv = await InsuranceType.find({ ownerAccountId: { $ne: null }, status: 'ACTIVE' }).lean<InsuranceTypeDoc[]>();
+  const report: Array<{ accountId: string; category: string; into: string; products: number; policies: number; result: string }> = [];
+  for (const p of priv) {
+    const s = byKey.get(categoryKey(p.name));
+    if (!s) continue;
+    const tpl = await TemplateVersion.findOne({ typeId: s._id, status: 'ACTIVE' }, { _id: 1 }).lean<{ _id: string }>();
+    const productIds = (await Product.find({ typeId: p._id }, { _id: 1 }).lean<Array<{ _id: string }>>()).map((x) => x._id);
+    const policies = await Policy.countDocuments({ typeId: p._id });
+    const row = { accountId: String(p.ownerAccountId), category: p.name, into: s.name, products: productIds.length, policies, result: '' };
+    if (!tpl) { report.push({ ...row, result: `skipped: SkyUp's ${s.name} has no live feature template` }); continue; }
+    if (!opts.apply) { report.push({ ...row, result: 'would merge' }); continue; }
+    await withTx(async (session) => {
+      const o = { session: session ?? undefined };
+      await Product.updateMany({ typeId: p._id }, { $set: { typeId: s._id } }, o);
+      await ProductVersion.updateMany({ productId: { $in: productIds } }, { $set: { templateId: tpl._id, 'data.form': formOfType(s).code } }, o);
+      await Policy.updateMany({ typeId: p._id }, { $set: { typeId: s._id } }, o);
+      await TemplateVersion.updateMany({ typeId: p._id, status: 'ACTIVE' }, { $set: { status: 'RETIRED', isOpen: null } }, o);
+      await InsuranceType.updateOne({ _id: p._id }, { $set: { status: 'INACTIVE' } }, o);
+      await audit({ entity: 'insuranceType', entityId: p._id, action: 'PRIVATE_CATEGORY_MERGED', after: { into: s._id, products: productIds.length, policies } }, { session });
+    });
+    report.push({ ...row, result: 'merged' });
+  }
+  return report;
 }

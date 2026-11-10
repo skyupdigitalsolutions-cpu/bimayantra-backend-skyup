@@ -26,7 +26,8 @@
     "catalogue:seed-templates": "tsx --env-file=.env src/scripts/seed-category-templates.ts",
     "catalogue:import": "tsx --env-file=.env src/scripts/import-catalogue.ts",
     "demo:agent-codes": "tsx --env-file=.env src/scripts/demo-agent-codes.ts",
-    "start:prod": "node dist/server.js"
+    "start:prod": "node dist/server.js",
+    "catalogue:merge-duplicates": "tsx --env-file=.env src/scripts/merge-duplicate-categories.ts"
   },
   "dependencies": {
     "@google-cloud/documentai": "10.2.0",

@@ -1,3 +1,5 @@
+import { categoryKey } from './categoryNames.js';
+import { Product } from './product.model.js';
 import type { Request } from 'express';
 import mongoose from 'mongoose';
 import { cfgList } from '../../config/cfg.js';
@@ -238,7 +240,14 @@ export async function ownProductTypes(accountId?: string | null) {
     TemplateVersion.find({ status: 'ACTIVE' }, { typeId: 1, number: 1 }).lean<Array<Pick<TemplateDoc, '_id' | 'typeId' | 'number'>>>(),
   ]);
   const byType = new Map(live.map((t) => [t.typeId, t]));
-  return types.flatMap((t) => {
+  // A private category that means the same as a SkyUp one ("Health" next to SkyUp's Health), made before duplicates
+  // were refused, is hidden while it has no products. One with products stays until it is merged
+  // (npm run catalogue:merge-duplicates), so those products keep working.
+  const skyupKeys = new Set(types.filter((t) => !t.ownerAccountId).map((t) => categoryKey(t.name)));
+  const dupIds = types.filter((t) => t.ownerAccountId && skyupKeys.has(categoryKey(t.name))).map((t) => t._id);
+  const dupWithProducts = new Set(dupIds.length ? (await Product.distinct('typeId', { typeId: { $in: dupIds } })) as string[] : []);
+  const hidden = new Set(dupIds.filter((id) => !dupWithProducts.has(id)));
+  return types.filter((t) => !hidden.has(t._id)).flatMap((t) => {
     const tpl = byType.get(t._id);
     return tpl ? [{ id: t._id, name: t.name, private: !!t.ownerAccountId, productForm: formOfType(t).code, template: { id: tpl._id, number: tpl.number } }] : [];
   });

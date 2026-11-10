@@ -65,6 +65,7 @@ describe('P-22 step 2: types and live features for + My product (read-only)', ()
     expect(r.body.data).toEqual({
       typeId: cat.healthId, typeName: 'Health', private: false, template: { id: cat.tplId, number: 1 },
       productForm: 'HEALTH', form: expect.objectContaining({ code: 'HEALTH', entryAges: 'ADULT_CHILD' }), // category details
+      brochureReading: false, // no brochure reader set up in tests: the PDF is attached, values typed by hand
       features: [
         { key: 'room_rent', name: 'Room rent limit', group: 'Limits and sub-limits', dataType: 'Amount in ₹', requiredToPublish: true, order: 1, help: 'Per day' },
         { key: 'ped_wait', name: 'Pre-existing disease waiting period', group: 'Waiting periods', dataType: 'Months', requiredToPublish: true, order: 2, help: null },

@@ -1,3 +1,4 @@
+import { categoryKey } from '../catalogue/categoryNames.js';
 import type { Request } from 'express';
 import { Schema, model } from 'mongoose';
 import { cfgBool, cfgList, cfgNum, cfgRange } from '../../config/cfg.js';
@@ -133,22 +134,44 @@ export async function rank(ctx: AuthContext, customerId: string, b: RankBody, re
   const categories = acc?.profile?.professional?.categories ?? [];
   const mapped = new Set((await InsurerMapping.find({ accountId: ctx.accountId, status: 'ACTIVE' }, { insurerId: 1 }).lean<Array<{ insurerId: string }>>()).map((m) => m.insurerId));
   const activeInsurers = new Map((await Insurer.find({ status: 'ACTIVE' }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((i) => [i._id, i.name]));
-  const candidates = type.status === 'ACTIVE' && categories.includes(type.name)
-    ? await Product.find({ typeId: b.typeId, $or: [{ kind: 'VERIFIED', status: { $in: ['ACTIVE', 'UPCOMING'] } }, { kind: 'OWN', accountId: ctx.accountId }] }).lean<ProductDoc[]>()
-    : [];
+  const ofType = await Product.find({ typeId: b.typeId, $or: [{ kind: 'VERIFIED', status: { $in: ['ACTIVE', 'UPCOMING'] } }, { kind: 'OWN', accountId: ctx.accountId }] }).lean<ProductDoc[]>();
+  const authorised = type.status === 'ACTIVE' && categories.includes(type.name);
+  const candidates = authorised ? ofType : [];
   const w = weights(b.priority);
   const results = [];
+  // Every product of this category that is NOT ranked, with the reason, so the advisor can fix it (agent code,
+  // profile category, sum insured, price, launch date) instead of seeing only "no products match".
+  const excluded: Array<{ productId: string; name: string; insurer: string | null; reason: string }> = [];
+  const insurerNames = new Map((await Insurer.find({ _id: { $in: [...new Set(ofType.map((p) => p.insurerId))] } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((i) => [i._id, i.name]));
+  const leaveOut = (p: ProductDoc, reason: string) => excluded.push({ productId: p._id, name: p.name ?? p.code, insurer: insurerNames.get(p.insurerId) ?? null, reason });
+  const lakhs = (n: number) => (n >= 10_000_000 ? `₹${n / 10_000_000} crore` : n >= 100_000 ? `₹${n / 100_000} lakh` : `₹${n.toLocaleString('en-IN')}`);
+  if (!authorised) for (const p of ofType) leaveOut(p, `${type.name} is not one of the insurance categories in your profile (My profile → Professional details).`);
+  // Own products filed under a private copy of this category (made before duplicates were refused)
+  const sameName = (await InsuranceType.find({ ownerAccountId: ctx.accountId, status: 'ACTIVE' }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).filter((t) => categoryKey(t.name) === categoryKey(type.name));
+  if (sameName.length) {
+    for (const p of await Product.find({ kind: 'OWN', accountId: ctx.accountId, typeId: { $in: sameName.map((t) => t._id) } }).lean<ProductDoc[]>()) {
+      insurerNames.set(p.insurerId, insurerNames.get(p.insurerId) ?? (await Insurer.findById(p.insurerId, { name: 1 }).lean<{ name: string }>())?.name ?? '');
+      leaveOut(p, `Saved under your own "${type.name}" category, not SkyUp's ${type.name}. Ask SkyUp to merge the two categories.`);
+    }
+  }
   for (const p of candidates) {
     // AC-P26-1: ACTIVE now, insurer ACTIVE with this advisor's ACTIVE agent code, sum insured on offer, a price.
-    if (effectiveStatus(p) !== 'ACTIVE' || !activeInsurers.has(p.insurerId) || !mapped.has(p.insurerId)) continue;
+    const st = effectiveStatus(p);
+    if (st !== 'ACTIVE') { leaveOut(p, st === 'UPCOMING' ? 'Not launched yet (launch date is in the future).' : `Not active (${st.toLowerCase().replace(/_/g, ' ')}).`); continue; }
+    if (!activeInsurers.has(p.insurerId)) { leaveOut(p, 'The insurer is not active.'); continue; }
+    if (!mapped.has(p.insurerId)) { leaveOut(p, `No active agent code for ${insurerNames.get(p.insurerId) ?? 'this insurer'} (My insurers).`); continue; }
     const v = await ProductVersion.findById(p.publishedVersionId).lean<ProductVersionDoc>();
-    if (!v) continue;
+    if (!v) { leaveOut(p, 'Not published yet.'); continue; }
     const d = (v.data ?? {}) as ProductData;
     const si = d.sumInsured ?? {};
-    if (!(si.options?.includes(b.sumInsured) || (si.min && si.max && b.sumInsured >= si.min && b.sumInsured <= si.max))) continue;
+    if (!(si.options?.includes(b.sumInsured) || (si.min && si.max && b.sumInsured >= si.min && b.sumInsured <= si.max))) {
+      const offer = si.options?.length ? si.options.map(lakhs).join(', ') : si.min && si.max ? `${lakhs(si.min)} to ${lakhs(si.max)}` : 'none recorded';
+      leaveOut(p, `${lakhs(b.sumInsured)} sum insured is not on offer (offers: ${offer}).`); continue;
+    }
     const tpl = await TemplateVersion.findById(v.templateId, { features: 1, factors: 1 }).lean<TemplateDoc>();
     const pr = await premiumFor(ctx.accountId!, p, d, tpl, ages, b.sumInsured, customerAge);
-    if ((pr as { noPrice?: boolean }).noPrice) continue; // RATE_TABLE without a current price is not quotable
+    if ((pr as { noPrice?: boolean }).noPrice) { leaveOut(p, 'Uses your rate table, but it has no current price version.'); continue; }
+    const before = results.length;
     const feats = (tpl?.features ?? []) as Array<{ key: string; name: string; dataType: string }>;
     // Change #2: each variant is ranked on its own values (merged over the product's); a variant whose sum-insured
     // range does not include the answer is left out. Price, ages and terms belong to the product (Q4 default).
@@ -173,6 +196,7 @@ export async function rank(ctx: AuthContext, customerId: string, b: RankBody, re
         ...(out.length ? { coverage: { messageId: 'QT-41', message: msg('QT-41', { n: covers, m: ages.length, names: out.map((o) => o.name).join(', ') }) } } : {}),
       });
     }
+    if (results.length === before) leaveOut(p, `No variant offers ${lakhs(b.sumInsured)} sum insured.`);
   }
   // Full coverage first, then the total, then the lower premium.
   results.sort((x, y) => (Number(y.covers === y.of) - Number(x.covers === x.of)) || (y.total - x.total) || ((x.premium ?? Infinity) - (y.premium ?? Infinity)));
@@ -181,7 +205,7 @@ export async function rank(ctx: AuthContext, customerId: string, b: RankBody, re
   const message = results.length ? { messageId: 'FIT-03', message: msg('FIT-03', { n: results.length }) } : { messageId: 'FIT-02', message: msg('FIT-02') };
   // AI summary (CFG-101): no AI service is connected yet, so the scores stand alone (FIT-05). It could never reorder.
   const summary = cfgBool('CFG-101') ? { text: null, messageId: 'FIT-05', message: msg('FIT-05') } : null;
-  return { rankingId: log._id, weights: w, results, summary, ...message };
+  return { rankingId: log._id, weights: w, results, excluded, summary, ...message };
 }
 
 /** Usual sum insured amounts offered inside a range (₹1 lakh … ₹10 crore). */

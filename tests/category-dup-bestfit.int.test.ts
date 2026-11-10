@@ -1,0 +1,101 @@
+/**
+ * Duplicate categories are refused by meaning ("Health insurance" = Health), old private duplicates are hidden or
+ * merged, and Best fit lists every product it leaves out with the reason.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { as, newMobile, registerAdvisor, resetState, startTestEnv, stopTestEnv } from './helpers.js';
+import { importCatalogue, readCatalogue } from '../src/modules/catalogue/catalogueImport.js';
+import { demoAgentCodes } from '../src/modules/demo/demoAgentCodes.js';
+import { InsuranceType, TemplateVersion } from '../src/modules/catalogue/types.model.js';
+import { Product } from '../src/modules/catalogue/product.model.js';
+import { mergeDuplicateCategories } from '../src/modules/catalogue/private.service.js';
+import { categoryKey } from '../src/modules/catalogue/categoryNames.js';
+
+beforeAll(startTestEnv);
+afterAll(stopTestEnv);
+beforeEach(resetState);
+
+async function setup(categories = ['Health', 'Motor Private Car', 'Term Life']) {
+  await importCatalogue(await readCatalogue('tests/fixtures/bimayantra-catalogue-demo.xlsx'), { apply: true, publish: true });
+  const adv = await registerAdvisor('Asha Rao');
+  const A = as(adv.token);
+  let p = (await A.get('/profile')).body.data;
+  await A.put('/profile/professional', { version: p.sections.professional.version, advisorType: 'POSP', categories, licenceNumber: 'POSP-1', licenceValidUntil: '31-12-2030' });
+  p = (await A.get('/profile')).body.data;
+  await A.put('/profile/personal', { version: p.sections.personal.version, dob: '15-04-1988' });
+  const cus = (await A.post('/customers', { name: 'David', mobile: newMobile(), dob: '10-06-1990' })).body.data;
+  const types = Object.fromEntries((await InsuranceType.find({ ownerAccountId: null }).lean<Array<{ _id: string; name: string }>>()).map((t) => [t.name, t._id])) as Record<string, string>;
+  return { adv, A, cus, types };
+}
+
+describe('duplicate categories', () => {
+  it('category names are compared by meaning', () => {
+    expect(categoryKey('Health')).toBe(categoryKey(' HEALTH  insurance '));
+    expect(categoryKey('Health')).toBe(categoryKey('Health-Cover'));
+    expect(categoryKey('Home & Contents')).toBe(categoryKey('home and contents plan'));
+    expect(categoryKey('Health')).not.toBe(categoryKey('Critical illness'));
+    expect(categoryKey('Insurance')).toBe('insurance');
+  });
+
+  it('a private category that means a SkyUp category or one of the advisor’s own is refused', async () => {
+    const w = await setup();
+    for (const name of ['Health insurance', '  HEALTH  ', 'health-plan', 'Term Life Policy']) {
+      const r = await w.A.post('/my-products/types', { name });
+      expect(r.status).toBe(400);
+      expect(r.body.error.fields[0]).toMatchObject({ field: 'name', messageId: 'CAT-52' });
+    }
+    expect((await w.A.post('/my-products/types', { name: 'Pet' })).status).toBe(201);
+    const again = await w.A.post('/my-products/types', { name: 'Pet insurance' });
+    expect(again.body.error.fields[0]).toMatchObject({ field: 'name', messageId: 'CAT-50' });
+  });
+
+  it('an old private "Health" is hidden while empty; with products it shows until merged; the merge moves them', async () => {
+    const w = await setup();
+    const accountId = w.adv.user.accountId!;
+    const [dup] = await InsuranceType.create([{ name: 'Health', nameKey: 'health', ownerAccountId: accountId, status: 'ACTIVE', productForm: 'HEALTH' }]);
+    await TemplateVersion.create([{ typeId: dup!._id, number: 1, status: 'ACTIVE', isOpen: null, features: [], factors: [], questions: [], makerId: w.adv.user.id, approvedAt: new Date() }]);
+    const names = async () => ((await w.A.get('/my-products/types')).body.data as Array<{ name: string; private: boolean }>).filter((t) => t.name === 'Health');
+    expect(await names()).toEqual([expect.objectContaining({ private: false })]); // empty duplicate hidden
+
+    const some = await Product.findOne({ typeId: w.types.Health }).lean<{ insurerId: string }>();
+    const [own] = await Product.create([{ kind: 'OWN', accountId, insurerId: some!.insurerId, typeId: dup!._id, code: 'MY-H1', name: 'My Health', makerId: w.adv.user.id }]);
+    expect((await names()).length).toBe(2); // shown while it holds a product
+
+    const dry = await mergeDuplicateCategories({ apply: false });
+    expect(dry).toEqual([expect.objectContaining({ category: 'Health', into: 'Health', products: 1, result: 'would merge' })]);
+    expect((await Product.findById(own!._id).lean())!.typeId).toBe(dup!._id);
+    const done = await mergeDuplicateCategories({ apply: true });
+    expect(done[0]!.result).toBe('merged');
+    expect((await Product.findById(own!._id).lean())!.typeId).toBe(w.types.Health);
+    expect((await InsuranceType.findById(dup!._id).lean())!.status).toBe('INACTIVE');
+    expect(await names()).toEqual([expect.objectContaining({ private: false })]);
+    expect(await mergeDuplicateCategories({ apply: true })).toEqual([]); // nothing left
+  });
+});
+
+describe('Best fit explains every product it leaves out', () => {
+  const rank = (w: Awaited<ReturnType<typeof setup>>, si = 500000) =>
+    w.A.post(`/customers/${w.cus.id}/best-fit`, { typeId: w.types.Health, people: [`C:${w.cus.id}`], budget: 20000, priority: 'BEST_COVERAGE', sumInsured: si });
+
+  it('no agent codes → each product says so', async () => {
+    const w = await setup();
+    const r = await rank(w);
+    expect(r.status).toBe(200);
+    expect(r.body.data.results).toEqual([]);
+    expect(r.body.data.excluded.length).toBeGreaterThan(0);
+    expect(r.body.data.excluded.every((x: { reason: string }) => x.reason.startsWith('No active agent code for'))).toBe(true);
+  });
+
+  it('category not in the profile → said once per product; sum insured not on offer → said with what is offered', async () => {
+    const w = await setup(['Motor Private Car']);
+    let r = await rank(w);
+    expect(r.body.data.excluded[0].reason).toContain('Health is not one of the insurance categories in your profile');
+    const w2 = await setup();
+    await demoAgentCodes(w2.adv.mobile, { apply: true });
+    r = await rank(w2, 990000000);
+    expect(r.body.data.results).toEqual([]);
+    expect(r.body.data.excluded[0].reason).toMatch(/sum insured is not on offer \(offers: /);
+    r = await rank(w2, 500000);
+    expect(r.body.data.results.length).toBeGreaterThan(0);
+  });
+});

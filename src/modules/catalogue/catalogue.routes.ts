@@ -1,3 +1,4 @@
+import { readerEnabled } from '../documents/reader.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
@@ -6,7 +7,7 @@ import { idempotent } from '../../middleware/idempotency.js';
 import { validate } from '../../middleware/validate.js';
 import { optionalStepUp, requireStepUp } from '../auth/stepUp.js';
 import { bareDomain, code, confirmations, date, email, enumOf, notes, optional, percent, phone, recordId, required, rupees, shortText, uin, version, webAddress, wholeNumber } from '../../lib/fields.js';
-import { cfgNum } from '../../config/cfg.js';
+import { cfgBool, cfgNum } from '../../config/cfg.js';
 import { sendData, sendDone } from '../../lib/response.js';
 import { INSURER_CATEGORIES } from '../insurers/insurer.model.js';
 import * as ins from './insurers.service.js';
@@ -268,7 +269,9 @@ export function ownProductRoutes() {
   r.use(authenticate, allow('products.own'));
   // Read-only lookups for the + My product form: types with a live template, and that template's features.
   r.get('/types', async (req, res) => sendData(res, await types.ownProductTypes(req.auth!.accountId)));
-  r.get('/types/:id/template', validate({ params: typeId }), async (req, res) => sendData(res, await types.liveFeatures(String(req.params.id), req.auth!.accountId ?? null)));
+  // brochureReading: whether + Product can read a brochure now (OCR switched on and a reader set up); without it the
+  // PDF is still attached to the product, and the values are typed by hand.
+  r.get('/types/:id/template', validate({ params: typeId }), async (req, res) => sendData(res, { ...(await types.liveFeatures(String(req.params.id), req.auth!.accountId ?? null)), brochureReading: cfgBool('CFG-102') && readerEnabled() }));
   r.get('/product-forms', async (_req, res) => sendData(res, formList()));
   // Changes #3, #4: step 1 "create a category" and step 2 "add a company", private to this account
   r.get('/insurers', validate({ query: z.object({ q: z.string().max(100).optional() }) }), async (req, res) => sendData(res, await priv.insurerChoices(req.auth!, (res.locals.query as { q?: string }).q)));
