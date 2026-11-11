@@ -147,3 +147,48 @@ describe('+ My product, step 2: companies that sell the chosen category', () => 
     expect(((await w.A.get('/my-products/insurers')).body.data as unknown[]).length).toBeGreaterThan(term.length);
   });
 });
+
+describe('Repair: products whose category no longer exists', () => {
+  it('finds them, says where each old category goes (by recorded kind or features), and moves them on --apply', async () => {
+    const w = await setup();
+    const { repairOrphanCategories } = await import('../src/modules/catalogue/private.service.js');
+    const { ProductVersion } = await import('../src/modules/catalogue/product.model.js');
+    expect(await repairOrphanCategories({ apply: false })).toEqual([]); // nothing to do
+    // Simulate: Term Life and Health deleted and created again with new IDs (same templates)
+    const recreate = async (name: string) => {
+      const old = (await InsuranceType.findOne({ ownerAccountId: null, name }).lean<{ _id: string; productForm: string | null }>())!;
+      const tpl = (await TemplateVersion.findOne({ typeId: old._id, status: 'ACTIVE' }).lean<Record<string, unknown>>())!;
+      await InsuranceType.deleteOne({ _id: old._id });
+      await TemplateVersion.updateOne({ _id: tpl._id }, { $set: { status: 'RETIRED', isOpen: null } });
+      const [nt] = await InsuranceType.create([{ name, nameKey: name.toLowerCase(), ownerAccountId: null, status: 'ACTIVE', productForm: old.productForm }]);
+      const { _id: _x, typeId: _t, ...rest } = tpl;
+      await TemplateVersion.create([{ ...rest, typeId: nt!._id, status: 'ACTIVE', isOpen: null }]);
+      return { oldId: old._id, newId: nt!._id as string };
+    };
+    const term = await recreate('Term Life');
+    const health = await recreate('Health');
+    // Health products lost their recorded kind: they must be matched by their features instead
+    const hp = await Product.find({ typeId: health.oldId }, { _id: 1 }).lean<Array<{ _id: string }>>();
+    await ProductVersion.updateMany({ productId: { $in: hp.map((p) => p._id) } }, { $set: { 'data.form': 'GENERIC' } });
+    const termCount = await Product.countDocuments({ typeId: term.oldId });
+    expect(termCount).toBeGreaterThan(0);
+    // the products page shows no category for them
+    const listed = (await w.A.get('/products')).body.data as Array<{ type: string | null; kind: string }>;
+    expect(listed.filter((p) => p.kind === 'VERIFIED' && p.type === null).length).toBe(termCount + hp.length);
+
+    const dry = await repairOrphanCategories({ apply: false });
+    expect(dry).toEqual(expect.arrayContaining([
+      expect.objectContaining({ oldCategoryId: term.oldId, into: 'Term Life', by: 'recorded kind TERM_LIFE', result: 'would move to Term Life' }),
+      expect.objectContaining({ oldCategoryId: health.oldId, into: 'Health', result: 'would move to Health' }),
+    ]));
+    expect(dry.find((r) => r.oldCategoryId === health.oldId)!.by).toMatch(/^feature template/);
+    expect(await Product.countDocuments({ typeId: term.oldId })).toBe(termCount); // dry run wrote nothing
+
+    await repairOrphanCategories({ apply: true });
+    expect(await Product.countDocuments({ typeId: term.newId })).toBe(termCount);
+    expect(await Product.countDocuments({ typeId: health.newId })).toBe(hp.length);
+    const after = (await w.A.get('/products')).body.data as Array<{ type: string | null; kind: string }>;
+    expect(after.filter((p) => p.kind === 'VERIFIED' && p.type === null)).toEqual([]);
+    expect(await repairOrphanCategories({ apply: false })).toEqual([]);
+  });
+});

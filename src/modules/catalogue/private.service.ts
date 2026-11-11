@@ -148,3 +148,63 @@ export async function mergeDuplicateCategories(opts: { apply: boolean }) {
   }
   return report;
 }
+
+/**
+ * Repair: products (and policies) whose category no longer exists — e.g. categories deleted and created again with new
+ * IDs. Such products show no category, are missing from the category tabs, Best fit, quotations by type and the
+ * feature table. Each old category is matched to a current SkyUp category by the kind its products recorded
+ * (data.form: HEALTH, TERM_LIFE…) or, failing that, by its feature template (feature keys overlap). Dry run unless apply.
+ *   npm run catalogue:repair-categories            # report only
+ *   npm run catalogue:repair-categories -- --apply # write
+ */
+export async function repairOrphanCategories(opts: { apply: boolean }) {
+  const existing = new Set((await InsuranceType.find({}, { _id: 1 }).lean<Array<{ _id: string }>>()).map((t) => t._id));
+  const orphans = await Product.find({ typeId: { $nin: [...existing] } }, { typeId: 1, publishedVersionId: 1, draftVersionId: 1, name: 1, code: 1 }).lean<Array<{ _id: string; typeId: string; publishedVersionId?: string | null; draftVersionId?: string | null; name?: string; code: string }>>();
+  const skyup = await InsuranceType.find({ ownerAccountId: null, status: 'ACTIVE' }).lean<InsuranceTypeDoc[]>();
+  const live = new Map<string, Set<string>>();
+  for (const t of skyup) {
+    const tpl = await TemplateVersion.findOne({ typeId: t._id, status: 'ACTIVE' }, { features: 1 }).lean<{ features: Array<{ key: string }> }>();
+    live.set(t._id, new Set((tpl?.features ?? []).map((f) => f.key)));
+  }
+  const byOld = new Map<string, typeof orphans>();
+  for (const p of orphans) byOld.set(p.typeId, [...(byOld.get(p.typeId) ?? []), p]);
+  const report: Array<{ oldCategoryId: string; products: number; policies: number; into: string | null; by: string; examples: string[]; result: string }> = [];
+  for (const [oldId, prods] of byOld) {
+    const versions = await ProductVersion.find({ productId: { $in: prods.map((p) => p._id) } }, { productId: 1, templateId: 1, 'data.form': 1 }).lean<Array<{ productId: string; templateId?: string; data?: { form?: string } }>>();
+    // 1) the kind the products recorded
+    const votes = new Map<string, number>();
+    for (const v of versions) { const f = v.data?.form; if (f && f !== 'GENERIC') votes.set(f, (votes.get(f) ?? 0) + 1); }
+    const topForm = [...votes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    let target = topForm ? skyup.filter((t) => formOfType(t).code === topForm) : [];
+    let by = topForm ? `recorded kind ${topForm}` : '';
+    // 2) failing that, the feature template
+    if (target.length !== 1) {
+      const keys = new Set<string>();
+      for (const id of new Set(versions.map((v) => v.templateId).filter(Boolean) as string[])) {
+        const tpl = await TemplateVersion.findById(id, { features: 1 }).lean<{ features: Array<{ key: string }> }>();
+        for (const f of tpl?.features ?? []) keys.add(f.key);
+      }
+      const scored = skyup.map((t) => {
+        const k = live.get(t._id) ?? new Set<string>();
+        const both = [...keys].filter((x) => k.has(x)).length;
+        return { t, score: keys.size && k.size ? both / new Set([...keys, ...k]).size : 0 };
+      }).sort((a, b) => b.score - a.score);
+      const best = scored[0];
+      target = best && best.score >= 0.5 && (scored[1]?.score ?? 0) < best.score ? [best.t] : [];
+      by = best && target.length ? `feature template (${Math.round(best.score * 100)}% same features)` : 'no match';
+    }
+    const policies = await Policy.countDocuments({ typeId: oldId });
+    const into = target.length === 1 ? target[0]! : null;
+    const row = { oldCategoryId: oldId, products: prods.length, policies, into: into?.name ?? null, by, examples: prods.slice(0, 3).map((p) => p.name ?? p.code), result: '' };
+    if (!into) { report.push({ ...row, result: 'skipped: could not tell which category — fix by hand' }); continue; }
+    if (!opts.apply) { report.push({ ...row, result: `would move to ${into.name}` }); continue; }
+    await withTx(async (session) => {
+      const o = { session: session ?? undefined };
+      await Product.updateMany({ typeId: oldId }, { $set: { typeId: into._id } }, o);
+      await Policy.updateMany({ typeId: oldId }, { $set: { typeId: into._id } }, o);
+      await audit({ entity: 'insuranceType', entityId: oldId, action: 'ORPHAN_CATEGORY_REPAIRED', after: { into: into._id, products: prods.length, policies, by } }, { session });
+    });
+    report.push({ ...row, result: `moved to ${into.name}` });
+  }
+  return report;
+}

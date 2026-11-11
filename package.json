@@ -27,7 +27,8 @@
     "catalogue:import": "tsx --env-file=.env src/scripts/import-catalogue.ts",
     "demo:agent-codes": "tsx --env-file=.env src/scripts/demo-agent-codes.ts",
     "start:prod": "node dist/server.js",
-    "catalogue:merge-duplicates": "tsx --env-file=.env src/scripts/merge-duplicate-categories.ts"
+    "catalogue:merge-duplicates": "tsx --env-file=.env src/scripts/merge-duplicate-categories.ts",
+    "catalogue:repair-categories": "tsx --env-file=.env src/scripts/repair-categories.ts"
   },
   "dependencies": {
     "@google-cloud/documentai": "10.2.0",
