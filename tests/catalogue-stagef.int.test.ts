@@ -192,10 +192,12 @@ describe('#6 brochure reading for advisors', () => {
     expect(err(await w.O.get(`/my-products/brochure-reading/${job.id}`))).toMatchObject({ status: 404 });
     const S = await (async () => { const m = newMobile(); await User.create({ accountId: null, role: 'STF', name: 'Meena Staff', mobile: normalizeMobile(m), status: 'ACTIVE', activatedAt: new Date() }); return as((await login(m)).token); })();
     expect(err(await S.post(`/admin/ocr-jobs/${job.id}/accept-high`))).toMatchObject({ status: 404 }); // SkyUp cannot touch an advisor's reading
-    // a template feature with low confidence must be decided first (OCR-05)
-    await w.A.post(`/my-products/brochure-reading/${job.id}/accept-high`);
+    // "Use these values" with nothing decided: high-confidence values come through, unsure ones are left to type
+    const quick = (await w.A.post(`/my-products/brochure-reading/${job.id}/result`)).body.data;
+    expect(quick.data).toMatchObject({ uin: 'CAREHLIP26001V012526', features: { room_rent: { value: 5000, page: 2 } } });
     const coPay = job.rows.find((r: { key: string }) => r.key === 'co_pay');
-    if (coPay.flagged) expect((await w.A.post(`/my-products/brochure-reading/${job.id}/result`)).body.error.messageId).toBe('OCR-05');
+    if (coPay.flagged) { expect(quick.data.features.co_pay).toBeUndefined(); expect(quick.left.features).toContain(coPay.name); }
+    await w.A.post(`/my-products/brochure-reading/${job.id}/accept-high`);
     await w.A.put(`/my-products/brochure-reading/${job.id}/decisions`, { decisions: [
       { key: 'co_pay', decision: 'NOT_STATED' },
       { section: 'DETAIL', key: 'name', decision: 'EDIT', value: 'CareFirst Family' },

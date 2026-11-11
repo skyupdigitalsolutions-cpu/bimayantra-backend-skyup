@@ -39,9 +39,48 @@ export async function readDocument(type: string, bytes: Buffer, mimeType: string
   return { text, values: parseFor(type, text) };
 }
 
-/** P-23: OCR text page by page, with each page's confidence (0 to 1), for brochure reading. */
-export async function ocrPages(bytes: Buffer, mimeType: string): Promise<{ text: string; pages: Array<{ number: number; text: string; confidence: number }> }> {
+type OcrPage = { number: number; text: string; confidence: number };
+/** Pages per Document AI request: a synchronous OCR request takes at most 15 pages, so longer PDFs are sent in parts. */
+export const OCR_PAGES_PER_REQUEST = 15;
+
+/**
+ * P-23: OCR text page by page, with each page's confidence (0 to 1), for brochure reading. A PDF longer than
+ * OCR_PAGES_PER_REQUEST is split into parts (pdf-lib), read two at a time, and joined back with the right page numbers.
+ */
+export async function ocrPages(bytes: Buffer, mimeType: string): Promise<{ text: string; pages: OcrPage[] }> {
   if (env.DOCUMENT_READER === 'none') throw new Error('No document reader is set up');
+  if (mimeType === 'application/pdf') {
+    const parts = await splitPdf(bytes, OCR_PAGES_PER_REQUEST);
+    if (parts.length > 1) {
+      const read: Array<{ text: string; pages: OcrPage[] }> = new Array(parts.length);
+      for (let i = 0; i < parts.length; i += 2) {
+        await Promise.all(parts.slice(i, i + 2).map(async (part, k) => { read[i + k] = await ocrOnce(part.bytes, mimeType); }));
+      }
+      const pages = read.flatMap((r, i) => r.pages.map((pg) => ({ ...pg, number: parts[i]!.firstPage + pg.number - 1 })));
+      return { text: read.map((r) => r.text).join('\n'), pages };
+    }
+  }
+  return ocrOnce(bytes, mimeType);
+}
+
+/** A PDF as parts of at most `size` pages (one part when it is short, or when it cannot be opened: Google decides). */
+export async function splitPdf(bytes: Buffer, size: number): Promise<Array<{ firstPage: number; bytes: Buffer }>> {
+  const { PDFDocument } = await import('pdf-lib');
+  let src: Awaited<ReturnType<typeof PDFDocument.load>>;
+  let count: number;
+  try { src = await PDFDocument.load(bytes, { ignoreEncryption: true }); count = src.getPageCount(); } catch { return [{ firstPage: 1, bytes }]; }
+  if (count <= size) return [{ firstPage: 1, bytes }];
+  const parts: Array<{ firstPage: number; bytes: Buffer }> = [];
+  for (let start = 0; start < count; start += size) {
+    const out = await PDFDocument.create();
+    const idx = Array.from({ length: Math.min(size, count - start) }, (_, i) => start + i);
+    for (const pg of await out.copyPages(src, idx)) out.addPage(pg);
+    parts.push({ firstPage: start + 1, bytes: Buffer.from(await out.save()) });
+  }
+  return parts;
+}
+
+async function ocrOnce(bytes: Buffer, mimeType: string): Promise<{ text: string; pages: OcrPage[] }> {
   const name = `projects/${env.DOCUMENT_AI_PROJECT_ID}/locations/${env.DOCUMENT_AI_LOCATION}/processors/${env.DOCUMENT_AI_PROCESSOR_ID}`;
   const [result] = await google().processDocument(
     { name, rawDocument: { content: bytes.toString('base64'), mimeType }, skipHumanReview: true },

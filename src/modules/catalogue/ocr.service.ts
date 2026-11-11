@@ -460,9 +460,18 @@ export async function advisorResult(ctx: AuthContext, jobId: string) {
   const j = await loadJob(ctx, jobId);
   if (j.kind !== 'ADVISOR') throw AppError.notFound();
   if (!['REVIEW_REQUIRED', 'REVIEWED'].includes(j.status)) throw AppError.invalidState('OCR job', j.status);
-  if (j.rows.some((r) => flagged(r) && !r.decision)) throw new AppError(400, 'VALIDATION_FAILED', 'OCR-05');
-  const out = decidedResult(j);
-  return { ocrJobId: j._id, typeId: j.typeId, data: { ...out.data, ...(out.customFeatures.length ? { customFeatures: out.customFeatures } : {}) }, variants: out.variants };
+  // "Use these values" never blocks: values the advisor did not touch are taken when read with high confidence (as
+  // "Accept all above n%" would), and low-confidence or unread ones are left blank to type in the form. The advisor
+  // still checks every step before publishing; nothing is saved here.
+  const auto = { ...j, rows: j.rows.map((r) => (!r.decision && !flagged(r) ? { ...r, decision: 'ACCEPT' as const } : r)),
+    details: (j.details ?? []).map((r) => (!r.decision && !flaggedDetail(r) ? { ...r, decision: 'ACCEPT' as const } : r)),
+    variants: (j.variants ?? []).map((r) => (!r.decision && !flaggedDetail(r) ? { ...r, decision: 'ACCEPT' as const } : r)) };
+  const out = decidedResult(auto as unknown as JobDoc);
+  const left = {
+    features: auto.rows.filter((r) => !r.decision).map((r) => r.name ?? r.key), // not found or not sure: to type
+    details: auto.details.filter((r) => !r.decision).map((r) => r.label ?? r.key),
+  };
+  return { ocrJobId: j._id, typeId: j.typeId, data: { ...out.data, ...(out.customFeatures.length ? { customFeatures: out.customFeatures } : {}) }, variants: out.variants, left };
 }
 
 /** On publish with ocrJobId: which values were read and checked (kept on the version), and the job is closed. */
