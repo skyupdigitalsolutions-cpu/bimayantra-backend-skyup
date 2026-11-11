@@ -81,13 +81,14 @@ export class AppError extends Error {
     return new AppError(409, 'VERSION_CONFLICT', 'GEN-05', { 'record type': recordType }, { current });
   }
   /** One or more field errors (GR-03, Section 2.5): GEN-02 on top when there are two or more. */
-  static fields(fields: Array<{ field: string; messageId: MessageId; params?: MessageParams }>) {
+  /** details (optional): extra data the client needs even though the request failed (e.g. a draft's new version). */
+  static fields(fields: Array<{ field: string; messageId: MessageId; params?: MessageParams }>, details?: unknown) {
     const list: FieldError[] = fields.map((f) => ({ field: f.field, messageId: f.messageId, message: msg(f.messageId, f.params) }));
     if (list.length === 1) {
       const only = fields[0]!;
-      return new AppError(400, 'VALIDATION_FAILED', only.messageId, only.params, undefined, list);
+      return new AppError(400, 'VALIDATION_FAILED', only.messageId, only.params, details, list);
     }
-    return new AppError(400, 'VALIDATION_FAILED', 'GEN-02', { count: list.length }, undefined, list);
+    return new AppError(400, 'VALIDATION_FAILED', 'GEN-02', { count: list.length }, details, list);
   }
   static field(field: string, messageId: MessageId, params?: MessageParams) {
     return AppError.fields([{ field, messageId, params }]);

@@ -173,3 +173,22 @@ describe('Which insurance types the advisor can quote', () => {
     expect(await typeProblem(pet.id)).toBeNull();
   });
 });
+
+describe('Draft versions after a refused step (no false “someone changed this quotation”)', () => {
+  it('a save refused for missing fields keeps the typed values, says the new version, and the next save with it succeeds', async () => {
+    const w = await world();
+    const q = (await w.A.post('/quotations', { customerId: w.cus.id })).body.data;
+    const { productId: _p, ...noProduct } = INPUTS(w);
+    const refused = await w.A.patch(`/quotations/${q.id}`, { version: q.version, step: 9, inputs: noProduct });
+    expect(refused.status).toBe(400);
+    const v = refused.body.error.details.quotation.version;
+    expect(v).toBe(q.version + 1);
+    expect((await w.A.get(`/quotations/${q.id}`)).body.data.inputs.sumInsured).toBe(500000); // typed values kept
+    // the old version is now stale (what the page used to send) …
+    expect((await w.A.patch(`/quotations/${q.id}`, { version: q.version, step: 9, inputs: INPUTS(w) })).body.error.code).toBe('VERSION_CONFLICT');
+    // … the version from the refusal works
+    const ok = await w.A.patch(`/quotations/${q.id}`, { version: v, step: 9, inputs: INPUTS(w) });
+    expect(ok.status).toBe(200);
+    expect((await w.A.post(`/quotations/${q.id}/calculate`, {})).status).toBe(200);
+  });
+});

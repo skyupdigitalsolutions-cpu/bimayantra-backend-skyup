@@ -255,7 +255,9 @@ export async function save(ctx: AuthContext, id: string, b: { version: number; s
   const step = problems.length ? Math.min(q.step, b.step) : b.step;
   const u = await Quotation.findOneAndUpdate({ _id: id, version: b.version }, { $set: { inputs, step, calc }, $inc: { version: 1 } }, { new: true }).lean<QuotationDoc>();
   if (!u) throw AppError.versionConflict('quotation', view(q));
-  if (problems.length) throw AppError.fields(problems);
+  // The typed values are kept (the draft remembers them) and the version moved on: the reply says the new version,
+  // so the page's next save is not refused as "someone changed this quotation".
+  if (problems.length) throw AppError.fields(problems, { quotation: { id: u._id, version: u.version, step: u.step } });
   void req;
   return view(u);
 }
