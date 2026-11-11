@@ -118,3 +118,32 @@ describe('Best fit explains every product it leaves out', () => {
     expect(r.body.data.results.length).toBeGreaterThan(0);
   });
 });
+
+describe('+ My product, step 2: companies that sell the chosen category', () => {
+  it('Health → general and health insurers; Travel → no life insurers; Term Life → only life insurers; own companies always', async () => {
+    const w = await setup();
+    const { Insurer } = await import('../src/modules/insurers/insurer.model.js');
+    const cls = new Map((await Insurer.find({}, { name: 1, category: 1 }).lean<Array<{ name: string; category: string | null }>>()).map((i) => [i.name, i.category]));
+    await w.A.post('/my-products/insurers', { name: 'Shree Ram Mutual Benefit' }); // a company the advisor added
+    const types = Object.fromEntries((await InsuranceType.find({ ownerAccountId: null }).lean<Array<{ _id: string; name: string }>>()).map((t) => [t.name, t._id])) as Record<string, string>;
+    const list = async (type: string) => ((await w.A.get(`/my-products/insurers?typeId=${types[type]}`)).body.data as Array<{ name: string; private: boolean }>);
+
+    const health = await list('Health');
+    expect(health.map((i) => i.name)).toEqual(expect.arrayContaining(['Care Health Insurance Ltd.', 'HDFC ERGO General Insurance Co. Ltd.', 'Shree Ram Mutual Benefit']));
+    expect(health.filter((i) => !i.private).every((i) => cls.get(i.name) !== 'Life')).toBe(true);
+
+    const travel = await list('Travel');
+    expect(travel.filter((i) => !i.private).every((i) => cls.get(i.name) !== 'Life')).toBe(true);
+    expect(travel.some((i) => i.name === 'Acko Life Insurance Ltd.')).toBe(false);
+
+    const term = await list('Term Life');
+    expect(term.filter((i) => !i.private).every((i) => cls.get(i.name) === 'Life')).toBe(true);
+    expect(term.map((i) => i.name)).toEqual(expect.arrayContaining(['HDFC Life Insurance Co. Ltd.', 'Shree Ram Mutual Benefit']));
+    expect(term.some((i) => i.name === 'Care Health Insurance Ltd.')).toBe(false);
+
+    const motor = await list('Motor Private Car');
+    expect(motor.filter((i) => !i.private).every((i) => cls.get(i.name) === 'General')).toBe(true);
+    // without a category: everything, as before
+    expect(((await w.A.get('/my-products/insurers')).body.data as unknown[]).length).toBeGreaterThan(term.length);
+  });
+});

@@ -274,7 +274,10 @@ export function ownProductRoutes() {
   r.get('/types/:id/template', validate({ params: typeId }), async (req, res) => sendData(res, { ...(await types.liveFeatures(String(req.params.id), req.auth!.accountId ?? null)), brochureReading: cfgBool('CFG-102') && readerEnabled() }));
   r.get('/product-forms', async (_req, res) => sendData(res, formList()));
   // Changes #3, #4: step 1 "create a category" and step 2 "add a company", private to this account
-  r.get('/insurers', validate({ query: z.object({ q: z.string().max(100).optional() }) }), async (req, res) => sendData(res, await priv.insurerChoices(req.auth!, (res.locals.query as { q?: string }).q)));
+  r.get('/insurers', validate({ query: z.object({ q: z.string().max(100).optional(), typeId: z.string().regex(/^typ_[a-f0-9]{28}$/).optional() }) }), async (req, res) => {
+    const qs = res.locals.query as { q?: string; typeId?: string };
+    sendData(res, await priv.insurerChoices(req.auth!, qs.q, qs.typeId)); // typeId: only companies that sell that category
+  });
   r.post('/insurers', writable, validate({ body: z.object({ name: required(shortText()) }).strict() }, { name: 'Company name' }), idempotent(), async (req, res) =>
     sendDone(res, await priv.addInsurer(req.auth!, req.body, req), 'GEN-08', { 'Record type': 'Company' }, 201));
   r.post('/types', writable, validate({ body: z.object({ name: required(shortText()), productForm: optional(enumOf(PRODUCT_FORMS)) }).strict() }, { name: 'Category name', productForm: 'Product details form' }), idempotent(), async (req, res) =>

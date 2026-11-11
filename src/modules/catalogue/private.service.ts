@@ -81,9 +81,34 @@ export async function addCategory(ctx: AuthContext, b: { name: string; productFo
 }
 
 /** Step 2 picker: the IRDAI library (ACTIVE) and this account's private insurers, searchable. */
-export async function insurerChoices(ctx: AuthContext, q?: string) {
+/**
+ * Which IRDAI licence classes may sell each kind of product: life insurers write term and savings plans; general
+ * insurers write motor and home; health, travel and personal accident are written by general and standalone health
+ * insurers. GENERIC (an advisor's own category, unknown kind): every class.
+ */
+const SELLERS: Record<ProductFormCode, ReadonlyArray<string>> = {
+  TERM_LIFE: ['Life'], LIFE_SAVINGS: ['Life'],
+  MOTOR_CAR: ['General'], MOTOR_TWO_WHEELER: ['General'], HOME: ['General'],
+  HEALTH: ['General', 'Standalone Health'], TRAVEL: ['General', 'Standalone Health'], PERSONAL_ACCIDENT: ['General', 'Standalone Health'],
+  GENERIC: ['Life', 'General', 'Standalone Health'],
+};
+
+/**
+ * + My product, step 2: the companies the advisor can pick. With a category (typeId): only insurers licensed for it,
+ * plus any insurer that already has a product in it (in case its class is recorded differently), plus companies the
+ * advisor added themselves (their class is unknown, so they always show).
+ */
+export async function insurerChoices(ctx: AuthContext, q?: string, typeId?: string) {
   const f: Record<string, unknown> = { status: 'ACTIVE', ...visibleTo(ctx.accountId) };
   if (q) f.nameKey = { $regex: q.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') };
+  if (typeId) {
+    const type = await InsuranceType.findOne({ _id: typeId, $or: [{ ownerAccountId: null }, { ownerAccountId: ctx.accountId }] }, { name: 1, productForm: 1 }).lean<{ name: string; productForm?: string | null }>();
+    if (type) {
+      const classes = SELLERS[formOfType(type).code as ProductFormCode] ?? SELLERS.GENERIC;
+      const selling = await Product.distinct('insurerId', { typeId, $or: [{ kind: 'VERIFIED' }, { kind: 'OWN', accountId: ctx.accountId }] });
+      f.$and = [{ $or: [{ category: { $in: classes } }, { _id: { $in: selling } }, { ownerAccountId: ctx.accountId }] }];
+    }
+  }
   const rows = await Insurer.find(f, { name: 1, category: 1, ownerAccountId: 1 }).sort({ name: 1 }).limit(200).lean<Array<Pick<InsurerDoc, '_id' | 'name' | 'category' | 'ownerAccountId'>>>();
   return rows.map((i) => ({ id: i._id, name: i.name, category: i.category ?? null, private: !!i.ownerAccountId }));
 }
