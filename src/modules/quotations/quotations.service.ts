@@ -1,3 +1,4 @@
+import { categoryKey } from '../catalogue/categoryNames.js';
 import type { Request } from 'express';
 import { createHash } from 'node:crypto';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
@@ -56,7 +57,7 @@ async function load(ctx: AuthContext, id: string) {
 async function context(ctx: AuthContext, q: Pick<QuotationDoc, 'customerId'>, i: Inputs) {
   const customer = await Customer.findOne({ _id: q.customerId, accountId: ctx.accountId }).lean<{ _id: string; name: string; dob: string | null; status: string; number: string; mobile: string }>();
   const acc = await Account.findById(ctx.accountId, { profile: 1, ownerName: 1 }).lean<{ profile?: { professional?: { categories?: string[]; licenceValidUntil?: string | null; licenceNumber?: string | null }; business?: { displayName?: string | null } } }>();
-  const type = i.typeId ? await InsuranceType.findById(i.typeId, { name: 1, status: 1 }).lean<{ _id: string; name: string; status: string }>() : null;
+  const type = i.typeId ? await InsuranceType.findById(i.typeId, { name: 1, status: 1, ownerAccountId: 1 }).lean<{ _id: string; name: string; status: string; ownerAccountId?: string | null }>() : null;
   const insurer = i.insurerId ? await Insurer.findById(i.insurerId, { name: 1, status: 1 }).lean<{ _id: string; name: string; status: string }>() : null;
   const mapping = i.insurerId ? await InsurerMapping.findOne({ accountId: ctx.accountId, insurerId: i.insurerId, status: 'ACTIVE' }).lean<{ agentCode: string; validUntil: string | null }>() : null;
   const product = i.productId ? await Product.findOne({ _id: i.productId, $or: [{ kind: 'VERIFIED' }, { kind: 'OWN', accountId: ctx.accountId }] }).lean<ProductDoc>() : null;
@@ -86,7 +87,12 @@ function check(ctx: AuthContext, c: Ctx, i: Inputs, upTo: number): Problem[] {
   }
   if (at(3)) {
     if (!c.type) p.push({ field: 'typeId', messageId: 'GEN-01', params: { 'Field label': 'Insurance type' } });
-    else if (!(c.acc?.profile?.professional?.categories ?? []).includes(c.type.name)) p.push({ field: 'typeId', messageId: 'PRF-18', params: { 'Insurance type': c.type.name } });
+    else {
+      const typeKey = categoryKey(c.type.name);
+      // The advisor's own private category needs no profile entry (the profile lists only SkyUp's categories).
+      const own = !!c.type.ownerAccountId && c.type.ownerAccountId === ctx.accountId;
+      if (!own && !(c.acc?.profile?.professional?.categories ?? []).some((x) => categoryKey(x) === typeKey)) p.push({ field: 'typeId', messageId: 'PRF-18', params: { 'Insurance type': c.type.name } });
+    }
   }
   if (at(4)) {
     if (!c.insurer) p.push({ field: 'insurerId', messageId: 'GEN-01', params: { 'Field label': 'Insurer' } });
@@ -427,7 +433,11 @@ export async function choices(ctx: AuthContext, typeId?: string, insurerId?: str
   const acc = await Account.findById(ctx.accountId, { profile: 1 }).lean<{ profile?: { professional?: { categories?: string[] } } }>();
   const cats = acc?.profile?.professional?.categories ?? [];
   // SkyUp categories the advisor works in, and the advisor's own private categories (change #4)
-  const types = (await InsuranceType.find({ status: 'ACTIVE', $or: [{ ownerAccountId: null, name: { $in: cats } }, { ownerAccountId: ctx.accountId }] }, { name: 1 }).sort({ name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((t) => ({ id: t._id, name: t.name }));
+  // Profile categories match by meaning ("Health insurance" = Health), like Best fit and the duplicate check.
+  const keys = new Set(cats.map(categoryKey));
+  const types = (await InsuranceType.find({ status: 'ACTIVE', $or: [{ ownerAccountId: null }, { ownerAccountId: ctx.accountId }] }, { name: 1, ownerAccountId: 1 }).sort({ name: 1 }).lean<Array<{ _id: string; name: string; ownerAccountId: string | null }>>())
+    .filter((t) => t.ownerAccountId || keys.has(categoryKey(t.name)))
+    .map((t) => ({ id: t._id, name: t.name }));
   const today = istToday();
   const maps = await InsurerMapping.find({ accountId: ctx.accountId, status: 'ACTIVE' }, { insurerId: 1, validUntil: 1 }).lean<Array<{ insurerId: string; validUntil: string | null }>>();
   const okIds = maps.filter((m) => !m.validUntil || m.validUntil >= today).map((m) => m.insurerId);

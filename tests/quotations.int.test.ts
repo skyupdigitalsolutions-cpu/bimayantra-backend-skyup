@@ -150,3 +150,26 @@ describe('P-27 create a normal quotation', () => {
     expect((await w.A.post(`/quotations/${d.id}/generate`, {})).body.data.status).toBe('READY');
   });
 });
+describe('Which insurance types the advisor can quote', () => {
+  it('no profile categories → no SkyUp types; a profile category written differently still counts; the advisor’s own category always counts', async () => {
+    const w = await world();
+    const { Account } = await import('../src/modules/accounts/account.model.js');
+    const accountId = w.adv.user.accountId!;
+    // no categories in the profile: no SkyUp type is offered, and step 2 is refused with PRF-18
+    await Account.updateOne({ _id: accountId }, { $set: { 'profile.professional.categories': [] } });
+    expect((await w.A.get('/quotations/choices')).body.data.types).toEqual([]);
+    // saving step 4 runs the checks of steps 1–3 (step 3 = the insurance type); later steps may still be incomplete
+    const typeProblem = async (typeId: string) => ((await draft(w, { typeId }, 4)).body.error?.fields ?? []).find((f: { field: string }) => f.field === 'typeId') ?? null;
+    expect(await typeProblem(w.typeId)).toMatchObject({ messageId: 'PRF-18' });
+    // stored as "health insurance" (older or renamed value): Health is offered and accepted
+    await Account.updateOne({ _id: accountId }, { $set: { 'profile.professional.categories': ['health insurance'] } });
+    expect((await w.A.get('/quotations/choices')).body.data.types.map((t: { name: string }) => t.name)).toEqual(['Health']);
+    expect(await typeProblem(w.typeId)).toBeNull();
+    // the advisor's own category ("Pet") needs no profile entry: offered and accepted
+    await Account.updateOne({ _id: accountId }, { $set: { 'profile.professional.categories': [] } });
+    const pet = (await w.A.post('/my-products/types', { name: 'Pet' })).body.data;
+    const types = (await w.A.get('/quotations/choices')).body.data.types;
+    expect(types.map((t: { name: string }) => t.name)).toEqual(['Pet']);
+    expect(await typeProblem(pet.id)).toBeNull();
+  });
+});
