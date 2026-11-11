@@ -350,7 +350,7 @@ export const MESSAGES = {
   // ── Advisor profile, KYC, insurers (P-05 to P-07) ──
   'PRF-01': 'Profile saved. Your profile is {percent}% complete.',
   'PRF-02': 'Your profile is {percent}% complete. Add {missing items} to finish.',
-  'PRF-03': 'To share quotations, first add: {missing items}.',
+  'PRF-03': 'To share quotations, first complete your own profile (Settings → My profile): {missing items}.',
   'PRF-04': 'KYC submitted for review. We aim to review it within {CFG-125} working days.',
   'PRF-05': 'Your KYC has been verified.',
   'PRF-06': 'Your KYC was not accepted: {reason}. Please correct it and submit again.',

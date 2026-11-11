@@ -62,7 +62,7 @@ describe('P-28 share', () => {
     const w = await world(false);
     const r = await share(w, 'LINK');
     expect(err(r)).toMatchObject({ status: 409, messageId: 'PRF-03' });
-    expect(r.body.error.message).toMatch(/^To share quotations, first add: .*Date of birth.*Email/);
+    expect(r.body.error.message).toMatch(/^To share quotations, first complete your own profile \(Settings → My profile\): .*Date of birth.*Email/);
   });
 
   it('AC-P28-4: the customer view link shows the quotation, records the view, and shows QT-20 after expiry', async () => {
