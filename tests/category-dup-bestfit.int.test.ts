@@ -84,12 +84,20 @@ describe('Best fit explains every product it leaves out', () => {
     expect(r.body.data.results).toEqual([]);
     expect(r.body.data.excluded.length).toBeGreaterThan(0);
     expect(r.body.data.excluded.every((x: { reason: string }) => x.reason.startsWith('No active agent code for'))).toBe(true);
+    expect(r.body.data.profileBlock).toBeNull();
   });
 
   it('category not in the profile → said once per product; sum insured not on offer → said with what is offered', async () => {
     const w = await setup(['Motor Private Car']);
     let r = await rank(w);
-    expect(r.body.data.excluded[0].reason).toContain('Health is not one of the insurance categories in your profile');
+    expect(r.body.data.profileBlock).toContain('Health is not one of the insurance categories in your profile');
+    // each product still shows its own problem (here: no agent codes yet), not only the profile one
+    expect(r.body.data.excluded.length).toBeGreaterThan(0);
+    expect(r.body.data.excluded.every((x: { reason: string }) => x.reason.startsWith('No active agent code for'))).toBe(true);
+    await demoAgentCodes(w.adv.mobile, { apply: true });
+    r = await rank(w);
+    expect(r.body.data.results).toEqual([]);
+    expect(r.body.data.excluded.some((x: { reason: string }) => x.reason.includes('it will rank once Health is in your profile'))).toBe(true);
     const w2 = await setup();
     await demoAgentCodes(w2.adv.mobile, { apply: true });
     r = await rank(w2, 990000000);

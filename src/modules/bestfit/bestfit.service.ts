@@ -136,7 +136,9 @@ export async function rank(ctx: AuthContext, customerId: string, b: RankBody, re
   const activeInsurers = new Map((await Insurer.find({ status: 'ACTIVE' }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((i) => [i._id, i.name]));
   const ofType = await Product.find({ typeId: b.typeId, $or: [{ kind: 'VERIFIED', status: { $in: ['ACTIVE', 'UPCOMING'] } }, { kind: 'OWN', accountId: ctx.accountId }] }).lean<ProductDoc[]>();
   const authorised = type.status === 'ACTIVE' && categories.includes(type.name);
-  const candidates = authorised ? ofType : [];
+  // Every product of the category is checked, even when the category is not in the advisor's profile: the profile
+  // issue is reported once (profileBlock) and each product still shows any other problem (agent code, sum insured…).
+  const candidates = type.status === 'ACTIVE' ? ofType : [];
   const w = weights(b.priority);
   const results = [];
   // Every product of this category that is NOT ranked, with the reason, so the advisor can fix it (agent code,
@@ -145,7 +147,9 @@ export async function rank(ctx: AuthContext, customerId: string, b: RankBody, re
   const insurerNames = new Map((await Insurer.find({ _id: { $in: [...new Set(ofType.map((p) => p.insurerId))] } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((i) => [i._id, i.name]));
   const leaveOut = (p: ProductDoc, reason: string) => excluded.push({ productId: p._id, name: p.name ?? p.code, insurer: insurerNames.get(p.insurerId) ?? null, reason });
   const lakhs = (n: number) => (n >= 10_000_000 ? `₹${n / 10_000_000} crore` : n >= 100_000 ? `₹${n / 100_000} lakh` : `₹${n.toLocaleString('en-IN')}`);
-  if (!authorised) for (const p of ofType) leaveOut(p, `${type.name} is not one of the insurance categories in your profile (My profile → Professional details).`);
+  const profileBlock = type.status === 'ACTIVE' && !authorised
+    ? `${type.name} is not one of the insurance categories in your profile. Tick it in My profile → Professional details to rank these products.`
+    : null;
   // Own products filed under a private copy of this category (made before duplicates were refused)
   const sameName = (await InsuranceType.find({ ownerAccountId: ctx.accountId, status: 'ACTIVE' }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).filter((t) => categoryKey(t.name) === categoryKey(type.name));
   if (sameName.length) {
@@ -171,6 +175,7 @@ export async function rank(ctx: AuthContext, customerId: string, b: RankBody, re
     const tpl = await TemplateVersion.findById(v.templateId, { features: 1, factors: 1 }).lean<TemplateDoc>();
     const pr = await premiumFor(ctx.accountId!, p, d, tpl, ages, b.sumInsured, customerAge);
     if ((pr as { noPrice?: boolean }).noPrice) { leaveOut(p, 'Uses your rate table, but it has no current price version.'); continue; }
+    if (!authorised) { leaveOut(p, `Nothing else to fix: it will rank once ${type.name} is in your profile.`); continue; }
     const before = results.length;
     const feats = (tpl?.features ?? []) as Array<{ key: string; name: string; dataType: string }>;
     // Change #2: each variant is ranked on its own values (merged over the product's); a variant whose sum-insured
@@ -205,7 +210,7 @@ export async function rank(ctx: AuthContext, customerId: string, b: RankBody, re
   const message = results.length ? { messageId: 'FIT-03', message: msg('FIT-03', { n: results.length }) } : { messageId: 'FIT-02', message: msg('FIT-02') };
   // AI summary (CFG-101): no AI service is connected yet, so the scores stand alone (FIT-05). It could never reorder.
   const summary = cfgBool('CFG-101') ? { text: null, messageId: 'FIT-05', message: msg('FIT-05') } : null;
-  return { rankingId: log._id, weights: w, results, excluded, summary, ...message };
+  return { rankingId: log._id, weights: w, results, excluded, profileBlock, summary, ...message };
 }
 
 /** Usual sum insured amounts offered inside a range (₹1 lakh … ₹10 crore). */
