@@ -135,7 +135,8 @@ export async function rank(ctx: AuthContext, customerId: string, b: RankBody, re
   const mapped = new Set((await InsurerMapping.find({ accountId: ctx.accountId, status: 'ACTIVE' }, { insurerId: 1 }).lean<Array<{ insurerId: string }>>()).map((m) => m.insurerId));
   const activeInsurers = new Map((await Insurer.find({ status: 'ACTIVE' }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((i) => [i._id, i.name]));
   const ofType = await Product.find({ typeId: b.typeId, $or: [{ kind: 'VERIFIED', status: { $in: ['ACTIVE', 'UPCOMING'] } }, { kind: 'OWN', accountId: ctx.accountId }] }).lean<ProductDoc[]>();
-  const authorised = type.status === 'ACTIVE' && categories.includes(type.name);
+  // Matched by meaning, not exact text: a profile category "Health insurance" or " health " authorises "Health".
+  const authorised = type.status === 'ACTIVE' && categories.some((c) => categoryKey(c) === categoryKey(type.name));
   // Every product of the category is checked, even when the category is not in the advisor's profile: the profile
   // issue is reported once (profileBlock) and each product still shows any other problem (agent code, sum insured…).
   const candidates = type.status === 'ACTIVE' ? ofType : [];

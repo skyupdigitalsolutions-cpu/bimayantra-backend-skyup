@@ -10,6 +10,7 @@ import { InsuranceType, TemplateVersion } from '../src/modules/catalogue/types.m
 import { Product } from '../src/modules/catalogue/product.model.js';
 import { mergeDuplicateCategories } from '../src/modules/catalogue/private.service.js';
 import { categoryKey } from '../src/modules/catalogue/categoryNames.js';
+import { Account } from '../src/modules/accounts/account.model.js';
 
 beforeAll(startTestEnv);
 afterAll(stopTestEnv);
@@ -104,6 +105,16 @@ describe('Best fit explains every product it leaves out', () => {
     expect(r.body.data.results).toEqual([]);
     expect(r.body.data.excluded[0].reason).toMatch(/sum insured is not on offer \(offers: /);
     r = await rank(w2, 500000);
+    expect(r.body.data.results.length).toBeGreaterThan(0);
+  });
+
+  it('a profile category written differently ("health insurance") still authorises Health', async () => {
+    const w = await setup();
+    // e.g. saved before SkyUp renamed the category, or changed in Admin → Configuration
+    await Account.updateOne({ _id: w.adv.user.accountId }, { $set: { 'profile.professional.categories': ['health insurance', 'Term Life'] } });
+    await demoAgentCodes(w.adv.mobile, { apply: true });
+    const r = await rank(w, 500000);
+    expect(r.body.data.profileBlock).toBeNull();
     expect(r.body.data.results.length).toBeGreaterThan(0);
   });
 });
