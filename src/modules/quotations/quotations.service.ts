@@ -443,7 +443,14 @@ export async function choices(ctx: AuthContext, typeId?: string, insurerId?: str
   const today = istToday();
   const maps = await InsurerMapping.find({ accountId: ctx.accountId, status: 'ACTIVE' }, { insurerId: 1, validUntil: 1 }).lean<Array<{ insurerId: string; validUntil: string | null }>>();
   const okIds = maps.filter((m) => !m.validUntil || m.validUntil >= today).map((m) => m.insurerId);
-  const insurers = (await Insurer.find({ _id: { $in: okIds }, status: 'ACTIVE' }, { name: 1 }).sort({ name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((i) => ({ id: i._id, name: i.name }));
+  // With a type chosen, only insurers that have a quotable product of that type (live and published, SkyUp's or the
+  // advisor's own): picking Motor no longer offers a Health insurer that then says "No quotable product".
+  let insurerIds = okIds;
+  if (typeId) {
+    const ofType = await Product.find({ typeId, insurerId: { $in: okIds }, publishedVersionId: { $ne: null }, $or: [{ kind: 'VERIFIED' }, { kind: 'OWN', accountId: ctx.accountId }] }).lean<ProductDoc[]>();
+    insurerIds = [...new Set(ofType.filter((x) => effectiveStatus(x) === 'ACTIVE').map((x) => x.insurerId))];
+  }
+  const insurers = (await Insurer.find({ _id: { $in: insurerIds }, status: 'ACTIVE' }, { name: 1 }).sort({ name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((i) => ({ id: i._id, name: i.name }));
   let products: Array<{ id: string; name: string; pricingMode: string; addOns: unknown[]; sumInsured: unknown; policyTerms: unknown; questions: unknown[] }> = [];
   if (typeId && insurerId) {
     const rows = await Product.find({ typeId, insurerId, $or: [{ kind: 'VERIFIED' }, { kind: 'OWN', accountId: ctx.accountId }] }).lean<ProductDoc[]>();

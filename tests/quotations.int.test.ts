@@ -192,3 +192,16 @@ describe('Draft versions after a refused step (no false “someone changed this 
     expect((await w.A.post(`/quotations/${q.id}/calculate`, {})).status).toBe(200);
   });
 });
+
+describe('Insurer step follows the chosen type', () => {
+  it('only insurers with a quotable product of the chosen type are offered', async () => {
+    const w = await world();
+    const motor = await InsuranceType.create({ name: 'Motor Private Car', nameKey: 'motor private car' });
+    const { Account } = await import('../src/modules/accounts/account.model.js');
+    await Account.updateOne({ _id: w.adv.user.accountId }, { $set: { 'profile.professional.categories': ['Health', 'Motor Private Car'] } });
+    const names = async (typeId?: string) => ((await w.A.get(`/quotations/choices${typeId ? `?typeId=${typeId}` : ''}`)).body.data.insurers as Array<{ name: string }>).map((i) => i.name);
+    expect(await names()).toEqual(['Alpha Health']); // no type yet: every insurer with an active agent code
+    expect(await names(w.typeId)).toEqual(['Alpha Health']); // Alpha has Health products
+    expect(await names(motor._id as string)).toEqual([]); // Alpha has no Motor product: not offered (was a dead end)
+  });
+});
