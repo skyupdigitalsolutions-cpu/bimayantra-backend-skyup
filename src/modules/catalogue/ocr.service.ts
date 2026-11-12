@@ -367,25 +367,57 @@ export function rupeesIn(text: string): number[] {
 export function readDetails(pages: Page[], form?: ProductForm): Row[] {
   const rows: Row[] = [];
   const first = <T>(fn: (line: string, pg: Page) => T | null) => { for (const pg of pages) for (const line of pg.text.split(/\r?\n/)) { const v = fn(line, pg); if (v !== null) return { v, pg }; } return null; };
-  const uin = first((l) => /\b([A-Z]{3,8}[A-Z0-9]{3,}V\d{6})\b/.exec(l.toUpperCase())?.[1] ?? null);
+  const uin = first((l) => /\b([A-Z]{3,8}[A-Z0-9]{2,}V\d{5,8})\b/.exec(l.toUpperCase())?.[1] ?? /\b(IRDAI\/[A-Z]+\/\d+\/[A-Z\d]+)\b/.exec(l.toUpperCase())?.[1] ?? null);
   if (uin) rows.push(mk('uin', 'IRDAI product UIN', uin.v, uin.pg.confidence, uin.pg.number));
-  const name = first((l) => { const t = l.trim(); return t.length >= 4 && t.length <= 60 && /\b(plan|policy|insurance|shield|care|health|cover)\b/i.test(t) && !/[:₹%]|\d{3,}/.test(t) ? t.replace(/\s+/g, ' ') : null; });
+  const name = first((l) => { const t = l.trim(); return t.length >= 4 && t.length <= 80 && /\b(plan|policy|insurance|shield|care|health|cover|protect|secure|assure|guard|raksha|suraksha|kavach|jeevan|bima)\b/i.test(t) && !/[:₹%]|\d{4,}/.test(t) ? t.replace(/\s+/g, ' ') : null; });
   if (name) rows.push(mk('name', 'Product name', name.v, name.pg.confidence * 0.6, name.pg.number)); // a guess from a heading: always checked
-  const si = first((l) => (/sum (?:insured|assured)|\bidv\b|insured declared value/i.test(l) && rupeesIn(l).length ? rupeesIn(l) : null));
+  const si = (() => {
+    // Try same-line match first (multiple phrasings)
+    const sameLine = first((l) => (/sum (?:insured|assured)|cover(?:age)? (?:amount|limit)|(?:insured|declared) (?:value|amount)|\bidv\b|capital sum|benefit amount|si[:\s]/i.test(l) && rupeesIn(l).length ? rupeesIn(l) : null));
+    if (sameLine) return sameLine;
+    // Try next-line match: label on one line, values on the next
+    for (const pg of pages) { const lines = pg.text.split(/\r?\n/); for (let i = 0; i < lines.length - 1; i++) {
+      if (/sum (?:insured|assured)|cover(?:age)? (?:amount|limit)|\bidv\b/i.test(lines[i]!) && rupeesIn(lines[i + 1]!).length) return { v: rupeesIn(lines[i + 1]!), pg };
+    }} return null;
+  })();
   if (si) rows.push(mk('sumInsuredOptions', `${form?.labels.sumInsured ?? 'Sum insured'} options`, si.v.sort((a, b) => a - b).join(', '), si.pg.confidence * 0.9, si.pg.number));
   if (form?.entryAges === 'NONE') { // a vehicle or a property is insured: no entry ages to read
     const t = first((l) => { const m = /policy (?:term|tenure|period)[^\d]*((?:\d{1,2}\s*(?:,|or|and|\/|-|–)?\s*)+)\s*years?/i.exec(l); return m ? [...new Set(m[1]!.match(/\d{1,2}/g)!.map(Number))].filter((n) => n >= 1 && n <= 30) : null; });
     if (t?.v.length) rows.push(mk('policyTerms', form.labels.policyTerms, t.v.join(', '), t.pg.confidence * 0.85, t.pg.number));
     return rows;
   }
-  const ages = first((l) => { const m = /entry age[^\d]*(\d{1,2})\s*(?:days?|months?|years?|yrs?)?\s*(?:to|-|–|and)\s*(\d{2,3})/i.exec(l); return m ? [m[1]!, m[2]!] : null; });
+  const ages = first((l) => {
+      const m = /(?:entry age|eligib(?:le|ility)|age (?:at entry|limit|band|criteria|range)|minimum[:\s]+\d|proposer age|member age)[^\d]*(\d{1,2})\s*(?:days?|months?|years?|yrs?)?\s*(?:to|-|–|—|and|&)\s*(\d{2,3})/i.exec(l);
+      if (m) return [m[1]!, m[2]!];
+      // "Minimum age: 18 years / Maximum age: 65 years" on separate lines or same line
+      const mn = /(?:min(?:imum)?\s*(?:entry\s*)?age|age\s*(?:from|min))[:\s]*(\d{1,2})/i.exec(l);
+      const mx = /(?:max(?:imum)?\s*(?:entry\s*)?age|age\s*(?:to|up\s*to|max))[:\s]*(\d{2,3})/i.exec(l);
+      if (mn && mx) return [mn[1]!, mx[1]!];
+      return null;
+    });
+    // If only min found on one line, search for max on another
+    if (!ages) {
+      let minAge: { v: string; pg: Page } | null = null;
+      let maxAge: { v: string; pg: Page } | null = null;
+      for (const pg of pages) for (const line of pg.text.split(/\r?\n/)) {
+        if (!minAge) { const mn = /(?:min(?:imum)?\s*(?:entry\s*)?age|age\s*(?:from|min))[:\s]*(\d{1,2})/i.exec(line); if (mn) minAge = { v: mn[1]!, pg }; }
+        if (!maxAge) { const mx = /(?:max(?:imum)?\s*(?:entry\s*)?age|age\s*(?:to|up\s*to|max))[:\s]*(\d{2,3})/i.exec(line); if (mx) maxAge = { v: mx[1]!, pg }; }
+      }
+      if (minAge && maxAge) { rows.push(mk('adultMin', 'Adult minimum entry age', minAge.v, minAge.pg.confidence * 0.85, minAge.pg.number)); rows.push(mk('adultMax', 'Adult maximum entry age', maxAge.v, maxAge.pg.confidence * 0.85, maxAge.pg.number)); }
+    }
   if (ages) { rows.push(mk('adultMin', 'Adult minimum entry age', ages.v[0]!, ages.pg.confidence * 0.9, ages.pg.number)); rows.push(mk('adultMax', 'Adult maximum entry age', ages.v[1]!, ages.pg.confidence * 0.9, ages.pg.number)); }
-  const terms = first((l) => { const m = /policy (?:term|tenure|period)[^\d]*((?:\d{1,2}\s*(?:,|or|and|\/|-|–)?\s*)+)\s*years?/i.exec(l); return m ? [...new Set(m[1]!.match(/\d{1,2}/g)!.map(Number))].filter((n) => n >= 1 && n <= 30) : null; });
+  const terms = first((l) => {
+      const m = /(?:policy\s*)?(?:term|tenure|period|duration)[^\d]*((?:\d{1,2}\s*(?:,|or|and|\/|-|–|&)?\s*)+)\s*(?:years?|yrs?)/i.exec(l);
+      if (m) return [...new Set(m[1]!.match(/\d{1,2}/g)!.map(Number))].filter((n) => n >= 1 && n <= 30);
+      // "1 year / 2 years / 3 years" without label
+      const m2 = /(\d{1,2})\s*(?:years?|yrs?)\s*(?:[,\/&]|or|and)\s*(\d{1,2})\s*(?:years?|yrs?)/i.exec(l);
+      return m2 ? [...new Set([Number(m2[1]!), Number(m2[2]!)])].filter((n) => n >= 1 && n <= 30) : null;
+    });
   if (terms?.v.length) rows.push(mk('policyTerms', 'Policy terms (years)', terms.v.join(', '), terms.pg.confidence * 0.85, terms.pg.number));
   return rows;
 }
 
-const TIERS = ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Titanium', 'Basic', 'Essential', 'Classic', 'Plus', 'Premier', 'Elite', 'Supreme', 'Advantage', 'Value', 'Optima', 'Signature'];
+const TIERS = ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Titanium', 'Basic', 'Essential', 'Classic', 'Plus', 'Premier', 'Elite', 'Supreme', 'Advantage', 'Value', 'Optima', 'Signature', 'Standard', 'Superior', 'Exclusive', 'Max', 'Pro', 'Lite', 'Ultra', 'Infinity', 'Prime', 'Royal', 'Super', 'Advanced', 'Comprehensive', 'Floater', 'Individual', 'Family'];
 /** Variant names: plan tiers ("Silver", "Gold") or lettered plans ("Plan A") in lines about plans or variants. */
 export function readVariantNames(pages: Page[]): Row[] {
   const found: Row[] = [];
