@@ -143,7 +143,7 @@ describe('advisor: + My product brochure reading', () => {
     expect(bad.body.error.fields[0]).toMatchObject({ field: 'detail.details.coverTypes', messageId: 'VAL-22' });
     expect((await w.A.put(`/my-products/brochure-reading/${job.id}/decisions`, { decisions })).status).toBe(200);
     const result = (await w.A.post(`/my-products/brochure-reading/${job.id}/result`)).body.data;
-    expect(result.data.details).toEqual({ coverTypes: ['Comprehensive', 'Third-party only'], fuelTypes: ['Petrol', 'Diesel', 'CNG'] });
+    expect(result.data.details).toEqual({ coverTypes: ['Comprehensive', 'Third-party only'], fuelTypes: ['Petrol', 'Diesel', 'CNG'], roadsideAssistance: true }); // found values are accepted at once
     expect(result.data.policyTerms).toEqual([1, 3]);
     const made = await w.A.post('/my-products', { insurerId: w.insurerId, typeId: w.types['Motor Private Car'], code: 'CAR-1', ocrJobId: job.id, data: {
       ...result.data, name: 'DriveSafe', uin: 'DRIVMOT26001V012526', launchDate: '01-01-2026', pricingMode: 'MANUAL_ENTRY', taxPercent: 18, sumInsured: { min: 100000, max: 3000000 },
@@ -205,4 +205,4 @@ describe('SkyUp: brochure reading on a verified draft', () => {
     expect(v.data.details).toEqual({ maxVehicleAgeYears: 12, coverTypes: ['Comprehensive'] }); // merged, not replaced
     expect(v.data.features.own_damage!.value).toBe(true);
   });
-});  
+});

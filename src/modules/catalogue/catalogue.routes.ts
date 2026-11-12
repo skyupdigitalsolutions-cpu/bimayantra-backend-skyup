@@ -284,8 +284,9 @@ export function ownProductRoutes() {
     sendDone(res, await priv.addCategory(req.auth!, req.body, req), 'GEN-08', { 'Record type': 'Category' }, 201));
   // Change #6: brochure reading for the advisor (Premium or trial; Normal → CAT-45). Nothing is saved to a product here.
   const jobId = z.object({ id: z.string().regex(/^ocr_[a-f0-9]{28}$/) });
-  r.post('/brochure-reading', writable, validate({ body: z.object({ typeId: required(z.string().regex(/^typ_[a-f0-9]{28}$/)), fileId: required(recordId('fil')), ignoreCategoryCheck: z.boolean().optional() }).strict() }, { typeId: 'Category', fileId: 'Brochure' }), async (req, res) =>
-    sendDone(res, await ocr.advisorStart(req.auth!, req.body.typeId, req.body.fileId, req, { ignoreCategoryCheck: req.body.ignoreCategoryCheck }), 'OCR-01', { 'CFG-38': cfgNum('CFG-38') }, 202));
+  // insurerId: the company chosen in step 2; the brochure must be that company's (OCR-10). Optional for older screens.
+  r.post('/brochure-reading', writable, validate({ body: z.object({ typeId: required(z.string().regex(/^typ_[a-f0-9]{28}$/)), fileId: required(recordId('fil')), insurerId: optional(recordId('ins')), ignoreCategoryCheck: z.boolean().optional() }).strict() }, { typeId: 'Category', fileId: 'Brochure', insurerId: 'Company' }), async (req, res) =>
+    sendDone(res, await ocr.advisorStart(req.auth!, req.body.typeId, req.body.fileId, req, { ignoreCategoryCheck: req.body.ignoreCategoryCheck, insurerId: req.body.insurerId ?? null }), 'OCR-01', { 'CFG-38': cfgNum('CFG-38') }, 202));
   r.get('/brochure-reading/:id', validate({ params: jobId }), async (req, res) => sendData(res, await ocr.advisorJob(req.auth!, String(req.params.id))));
   r.put('/brochure-reading/:id/decisions', writable, validate({ params: jobId, body: decisionsBody }), async (req, res) => sendData(res, await ocr.decideAny(req.auth!, String(req.params.id), req.body.decisions)));
   r.post('/brochure-reading/:id/accept-high', writable, validate({ params: jobId }), async (req, res) => sendData(res, await ocr.acceptHighAny(req.auth!, String(req.params.id))));
