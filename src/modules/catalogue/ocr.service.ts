@@ -14,7 +14,7 @@ import type { AuthContext } from '../rbac/capabilities.js';
 import { Product, ProductVersion, type ProductVersionDoc } from './product.model.js';
 import { InsuranceType, TemplateVersion, type TemplateDoc } from './types.model.js';
 import { categoryMismatch, detectCategory } from './brochureCategory.js';
-import { checkCompany } from './brochureInsurer.js';
+import { checkCompany, inSentence } from './brochureInsurer.js';
 import { Insurer } from '../insurers/insurer.model.js';
 import { formOfType, productForm, type DetailField, type ProductForm } from './productForms.js';
 
@@ -140,7 +140,7 @@ const view = (j: JobDoc) => ({
   category: { form: j.form ?? null, name: j.categoryName ?? null }, detectedCategory: j.detected ? { form: j.detected.form ?? null, label: j.detected.label ?? null } : null,
   ...(j.status === 'WRONG_CATEGORY' ? { messageId: 'OCR-09', message: msg('OCR-09', mismatchParams(j)) } : {}),
   company: j.insurerId ? { id: j.insurerId, name: j.companyName ?? null } : null, detectedCompany: j.detectedCompany ?? null,
-  ...(j.status === 'WRONG_COMPANY' ? { messageId: 'OCR-10', message: msg('OCR-10', { detected: j.detectedCompany?.name ?? 'another insurer', chosen: j.companyName ?? 'the chosen company' }) } : {}),
+  ...(j.status === 'WRONG_COMPANY' ? { messageId: 'OCR-10', message: msg('OCR-10', { detected: inSentence(j.detectedCompany?.name ?? 'another insurer'), chosen: inSentence(j.companyName ?? 'the chosen company') }) } : {}),
   // label: the feature's name (details, variants and suggestions already carry one)
   rows: j.rows.map((r) => ({ ...r, label: r.name ?? r.key, flagged: flagged(r), ...(r.found ? {} : { messageId: 'OCR-08' }) })),
   details: (j.details ?? []).map((r) => ({ ...r, flagged: flaggedDetail(r) })),
@@ -214,9 +214,10 @@ function run(jobId: string, templateId: string, bytes: Buffer, mime: string, ctx
       }
       // Is it from the company chosen in step 2? (client requirement: another insurer's brochure is refused, OCR-10)
       if (job?.insurerId) {
-        const co = await checkCompany(read.text, job.insurerId, job.accountId ?? null);
+        // A failure inside the check never fails the reading: the brochure is then read as before
+        const co = await checkCompany(read.text, job.insurerId, job.accountId ?? null).catch((err) => { logger.warn({ err, jobId }, 'Brochure company check skipped'); return null; });
         if (co?.mismatch) {
-          const params = { detected: co.detected!.name, chosen: co.chosen.name };
+          const params = { detected: inSentence(co.detected!.name), chosen: inSentence(co.chosen.name) };
           await OcrJob.updateOne({ _id: jobId }, { $set: { detectedCompany: { id: co.detected!.id, name: co.detected!.name }, rawText: read.text, error: msg('OCR-10', params) } });
           await tell('OCR-10', params);
           await OcrJob.updateOne({ _id: jobId }, { $set: { status: 'WRONG_COMPANY' } });

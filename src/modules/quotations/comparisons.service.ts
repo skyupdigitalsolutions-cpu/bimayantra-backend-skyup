@@ -281,8 +281,11 @@ export async function choose(ctx: AuthContext, id: string, b: { version: number;
   const c = await load(ctx, id);
   if (!['SHARED', 'READY', 'PRODUCT_CHOSEN'].includes(c.status)) throw AppError.invalidState('comparison', c.status);
   // With variants as separate options, a product offered more than once needs the variant (else the first option)
-  const opt = (c.options as Option[]).find((o) => o.productId === b.productId && (b.variantId === undefined || (o.variantId ?? null) === (b.variantId ?? null)));
-  if (!opt) throw AppError.field(b.variantId ? 'variantId' : 'productId', 'VAL-22');
+  // The screen sends the column's variant, which is the product's default variant when the option had none chosen:
+  // an exact match first, else the product's only option (a product offered twice still needs its variant)
+  const same = (c.options as Option[]).filter((o) => o.productId === b.productId);
+  const opt = same.find((o) => b.variantId === undefined || (o.variantId ?? null) === (b.variantId ?? null)) ?? (same.length === 1 ? same[0] : undefined);
+  if (!opt) throw AppError.field(same.length ? 'variantId' : 'productId', 'VAL-22');
   const u = await Comparison.findOneAndUpdate({ _id: id, version: b.version }, { $set: { status: 'PRODUCT_CHOSEN', chosenProductId: b.productId, chosenVariantId: opt.variantId ?? null }, $inc: { version: 1 } }, { new: true }).lean<CqDoc>();
   if (!u) throw AppError.versionConflict('comparison', view(c));
   await audit({ entity: 'comparison', entityId: id, action: 'COMPARISON_PRODUCT_CHOSEN', after: { productId: b.productId } }, { req });

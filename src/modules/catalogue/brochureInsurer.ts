@@ -28,10 +28,10 @@ const UIN = /\b([A-Z]{3})[A-Z]{2,4}\d{2,6}[A-Z]?\d{0,6}\b/g; // e.g. HDFHLIP2146
 async function prefixMap(): Promise<Map<string, Set<string>>> {
   const prods = await Product.find({ publishedVersionId: { $ne: null } }, { insurerId: 1, publishedVersionId: 1 }).lean<Array<{ insurerId: string; publishedVersionId: string }>>();
   const vs = await ProductVersion.find({ _id: { $in: prods.map((p) => p.publishedVersionId) } }, { 'data.uin': 1 }).lean<Array<{ _id: string; data?: { uin?: string } }>>();
-  const uinOf = new Map(vs.map((v) => [v._id, v.data?.uin ?? '']));
+  const uinOf = new Map(vs.map((v) => [v._id, String(v.data?.uin ?? '')])); // a UIN saved as a number is still read
   const map = new Map<string, Set<string>>();
   for (const p of prods) {
-    const u = (uinOf.get(p.publishedVersionId) ?? '').toUpperCase();
+    const u = String(uinOf.get(p.publishedVersionId) ?? '').toUpperCase();
     if (!/^[A-Z]{3}/.test(u)) continue;
     const k = u.slice(0, 3);
     if (!map.has(k)) map.set(k, new Set());
@@ -68,3 +68,6 @@ export async function checkCompany(text: string, chosenId: string, accountId: st
   const best = others[0] && others[0].score > 0 ? others[0] : null;
   return { chosen: { id: chosen._id, name: chosen.name }, detected: best, mismatch: chosenScore === 0 && !!best && best.score >= CLEAR_SCORE };
 }
+
+/** A company name inside a sentence: without a closing full stop ("Co. Ltd." → "Co. Ltd"), so the sentence's own stop is not doubled. */
+export const inSentence = (name: string) => name.trim().replace(/\.+$/, '');

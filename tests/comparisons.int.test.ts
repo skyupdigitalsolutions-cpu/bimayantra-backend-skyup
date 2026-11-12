@@ -98,7 +98,10 @@ describe('P-30 comparison quotations', () => {
     expect(pub.valid).toBe(true);
     expect(JSON.stringify(pub)).not.toMatch(/payment/i); // AC-P30-5
     const cur = (await w.A.get(`/comparisons/${c.id}`)).body.data;
-    const ch = await w.A.post(`/comparisons/${c.id}/choose`, { version: cur.version, productId: w.p2 });
+    // the screen sends the column's variant (the product's default one) though the option was saved without a variant
+    const col = cur.snapshot.columns.find((x: { productId: string }) => x.productId === w.p2);
+    expect(col.variantId).toMatch(/^var_/);
+    const ch = await w.A.post(`/comparisons/${c.id}/choose`, { version: cur.version, productId: w.p2, variantId: col.variantId });
     expect(ch.body.meta.message).toBe("Meena Iyer's choice is saved. Create the quotation for Beta Silver now?");
     const q = (await w.A.post(`/comparisons/${c.id}/create-quotation`, {})).body.data;
     expect(q).toMatchObject({ status: 'DRAFT', number: null, calc: null }); // never copies the comparison's premium

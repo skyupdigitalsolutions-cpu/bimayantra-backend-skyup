@@ -67,7 +67,7 @@ describe('brochure company check', () => {
     const job = await read(w, w.star);
     expect(job.status).toBe('WRONG_COMPANY');
     expect(job.messageId).toBe('OCR-10');
-    expect(job.message).toBe('This brochure looks like it is from HDFC ERGO General Insurance Co. Ltd., but the company chosen is Star Health and Allied Insurance Co. Ltd.. Go back and choose HDFC ERGO General Insurance Co. Ltd. as the company, or upload a Star Health and Allied Insurance Co. Ltd. brochure.');
+    expect(job.message).toBe('This brochure is from HDFC ERGO General Insurance Co. Ltd, not Star Health and Allied Insurance Co. Ltd. Go back to Company and choose HDFC ERGO General Insurance Co. Ltd, or upload the Star Health and Allied Insurance Co. Ltd brochure.');
     expect(job.detectedCompany).toEqual({ id: w.hdfc, name: 'HDFC ERGO General Insurance Co. Ltd.' });
     expect(job.rows).toEqual([]);
     expect((await Notification.findOne({ messageId: 'OCR-10' }).lean())).toBeTruthy();
@@ -91,6 +91,15 @@ describe('brochure company check', () => {
     expect(job.details.find((r: { key: string }) => r.key === 'uin')).toMatchObject({ value: 'HDFHLIP21467V022021', decision: 'ACCEPT' });
     const result = (await w.A.post(`/my-products/brochure-reading/${job.id}/result`)).body.data;
     expect(result.data).toMatchObject({ uin: 'HDFHLIP21467V022021', features: { room_rent: { value: 'No limit' }, in_patient_hospitalisation: { value: true } } });
+  });
+
+  it('a product whose UIN was saved as a number does not break the check (it used to fail the reading)', async () => {
+    const w = await world();
+    const p = await Product.create({ kind: 'OWN', ownerAccountId: 'acc_x', insurerId: w.star, typeId: w.typeId, code: 'NUM', makerId: 'x', status: 'ACTIVE' });
+    const v = await ProductVersion.create({ productId: p._id, number: 1, templateId: (await TemplateVersion.findOne({ typeId: w.typeId }).lean())!._id, makerId: 'x', status: 'PUBLISHED', isOpen: null, data: { name: 'Num', uin: 284390234 } });
+    await Product.updateOne({ _id: p._id }, { $set: { publishedVersionId: v._id } });
+    const job = await read(w, w.star);
+    expect(job.status).toBe('WRONG_COMPANY');
   });
 
   it('no company sent (older screens) or a brochure that names nobody: read as before', async () => {
