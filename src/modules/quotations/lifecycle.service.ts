@@ -90,10 +90,38 @@ export async function share(ctx: AuthContext, id: string, channel: 'EMAIL' | 'WH
   const out = { quotation: quotationView(u), link, pdfFileId: rev.pdfFileId };
   if (channel === 'EMAIL') return { ...out, messageId: 'QT-15' as const, params: { email: to! } };
   if (channel === 'WHATSAPP') {
-    const text = `Dear ${customer.name}, here is your insurance quotation ${q.number} R${rev.revision}: ${link}`;
+    const validUntil = rev.validUntil ?? (first ? addDays(istToday(), cfgNum('CFG-46')) : null);
+    const me = await User.findById(ctx.userId, { name: 1, mobile: 1 }).lean<{ name: string; mobile: string }>();
+    const text = quotationMessage(rev.snapshot as Record<string, any>, { customer: customer.name, number: `${q.number} R${rev.revision}`, link, validUntil, advisor: me ? { name: me.name, mobile: me.mobile } : null });
     return { ...out, whatsappUrl: `https://wa.me/${customer.mobile.replace(/^\+/, '')}?text=${encodeURIComponent(text)}`, messageId: 'QT-16' as const, params: {} };
   }
   return { ...out, messageId: (channel === 'LINK' ? 'GEN-16' : 'GEN-08') as 'GEN-16' | 'GEN-08', params: channel === 'LINK' ? {} : { 'Record type': 'Download' } };
+}
+
+/**
+ * The WhatsApp message for a shared quotation: the main details and the link, ready to send (the advisor sends it from
+ * their own WhatsApp). Anything missing from an older snapshot is simply left out.
+ */
+export function quotationMessage(snap: Record<string, any>, m: { customer: string; number: string; link: string; validUntil: string | null; advisor?: { name: string; mobile?: string | null } | null }) {
+  const rs = (n: unknown) => (typeof n === 'number' ? `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : null);
+  const product = [snap?.insurer?.name, snap?.product?.name, snap?.product?.variantName && snap.product.variantName !== 'Standard' ? `(${snap.product.variantName})` : null].filter(Boolean).join(' ');
+  const people = Array.isArray(snap?.people) ? snap.people.map((x: { name?: string }) => x?.name).filter(Boolean).join(', ') : '';
+  const term = snap?.inputs?.policyTerm ? `${snap.inputs.policyTerm} year${snap.inputs.policyTerm === 1 ? '' : 's'}` : null;
+  const premium = rs(snap?.breakdown?.final);
+  const lines = [
+    `Dear ${m.customer},`,
+    '',
+    `Here is your insurance quotation ${m.number}:`,
+    product ? `• Plan: ${product}` : null,
+    people ? `• Covers: ${people}` : null,
+    rs(snap?.inputs?.sumInsured) ? `• Sum insured: ${rs(snap.inputs.sumInsured)}${term ? ` for ${term}` : ''}` : null,
+    premium ? `• Total premium: ${premium} (incl. GST)` : null,
+    m.validUntil ? `• Valid until: ${m.validUntil.split('-').reverse().join('-')}` : null,
+    '',
+    `View the full quotation: ${m.link}`,
+    (m.advisor?.name ?? snap?.advisor?.name) ? `\n${m.advisor?.name ?? snap.advisor.name}${m.advisor?.mobile ? `, ${m.advisor.mobile}` : ''}` : null,
+  ];
+  return lines.filter((l) => l !== null).join('\n');
 }
 
 /**

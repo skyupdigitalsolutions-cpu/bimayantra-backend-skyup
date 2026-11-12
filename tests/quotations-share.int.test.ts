@@ -55,6 +55,16 @@ describe('P-28 share', () => {
     const wa = await as(s.token).post(`/quotations/${w.q.id}/share`, { channel: 'WHATSAPP' });
     expect(wa.body.meta.message).toBe('WhatsApp opened with your message. Press send in WhatsApp to share it.');
     expect(wa.body.data.whatsappUrl).toMatch(/^https:\/\/wa\.me\/91\d{10}\?text=/);
+    // the message carries the quotation's details, the link and the advisor
+    const text = decodeURIComponent(wa.body.data.whatsappUrl.split('?text=')[1]);
+    expect(text).toMatch(/^Dear .+,\n\nHere is your insurance quotation QT-\d{6}-\d{5} R1:\n/);
+    expect(text).toMatch(/• Plan: .+/);
+    expect(text).toMatch(/• Covers: .+/);
+    expect(text).toMatch(/• Sum insured: ₹[\d,]+ for \d+ years?/);
+    expect(text).toMatch(/• Total premium: ₹[\d,]+ \(incl\. GST\)/);
+    expect(text).toContain(`• Valid until: ${firstExpiry.split('-').reverse().join('-')}`);
+    expect(text).toMatch(/View the full quotation: http.+\/q\/[A-Za-z0-9_-]{43}/);
+    if (process.env.SHOW_WA) console.log(text);
     expect(wa.body.data.quotation.revisions[0].validUntil).toBe(firstExpiry); // a later share never extends it
   });
 
