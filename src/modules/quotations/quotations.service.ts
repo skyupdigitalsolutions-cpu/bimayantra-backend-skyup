@@ -1,7 +1,9 @@
 import { categoryKey } from '../catalogue/categoryNames.js';
 import type { Request } from 'express';
 import { createHash } from 'node:crypto';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { PDFDocument, StandardFonts, type PDFFont, type PDFPage } from 'pdf-lib';
+import { wrap } from '../../lib/pdfText.js';
+import { logger } from '../../lib/logger.js';
 import { ageOn, istToday } from '../../lib/clock.js';
 import { AppError } from '../../lib/errors.js';
 import { msg, type MessageId } from '../../lib/messages.js';
@@ -276,14 +278,22 @@ export async function calc(ctx: AuthContext, id: string) {
   return { quotation: view(u!), warnings };
 }
 
-/** The quotation PDF (standard design, the advisor's business name). Amounts print as "Rs." (standard PDF fonts have no ₹). */
-async function buildPdf(snap: Record<string, any>) {
+/**
+ * The quotation PDF (standard design, the advisor's business name). Amounts print as "Rs." and all text goes through
+ * pdfText (standard PDF fonts cannot print ₹, ≥… and would fail the PDF, QT-13); a new page starts when one is full.
+ */
+export async function buildPdf(snap: Record<string, any>) {
   const doc = await PDFDocument.create();
-  const page = doc.addPage([595, 842]);
+  let page: PDFPage = doc.addPage([595, 842]);
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
   let y = 800;
-  const line = (t: string, f = font, size = 10) => { for (const part of t.match(/.{1,95}(\s|$)/g) ?? [t]) { page.drawText(part.trim(), { x: 50, y, size, font: f }); y -= size + 6; } };
+  const line = (t: string, f: PDFFont = font, size = 10) => {
+    for (const part of wrap(f, t, size, 495)) {
+      if (y < 50) { page = doc.addPage([595, 842]); y = 800; }
+      page.drawText(part, { x: 50, y, size, font: f }); y -= size + 6;
+    }
+  };
   const rs = (n: number) => `Rs. ${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   line(snap.advisor.businessName, bold, 16);
   line(`Quotation ${snap.number} R${snap.revision}   ·   ${snap.calculationDate}`, bold, 12);
@@ -356,7 +366,7 @@ export async function generate(ctx: AuthContext, id: string, req: Request) {
       disclaimer: DISCLAIMER.replace('{date}', today.split('-').reverse().join('-')),
     };
     let pdf: Buffer;
-    try { pdf = await buildPdf(snapshot); } catch { throw new AppError(500, 'INTERNAL_ERROR', 'QT-13'); }
+    try { pdf = await buildPdf(snapshot); } catch (err) { logger.error({ err, quotation: id }, 'Quotation PDF could not be created'); throw new AppError(500, 'INTERNAL_ERROR', 'QT-13'); }
     const file = await storeFile(ctx, 'QUOTATION_PDF', pdf, `${number}-R${revision}.pdf`, req);
     const earlier = q.revisions.map((r) => (['READY', 'SHARED', 'ACCEPTED', 'REJECTED', 'EXPIRED'].includes(r.status) ? { ...r, status: 'SUPERSEDED' } : r));
     const u = await Quotation.findOneAndUpdate({ _id: id, status: 'DRAFT', version: q.version }, {

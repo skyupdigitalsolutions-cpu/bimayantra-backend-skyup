@@ -1,10 +1,12 @@
 import type { Request } from 'express';
 import { randomBytes } from 'node:crypto';
 import { Schema, model, type InferSchemaType } from 'mongoose';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import { cfgNum, cfgRange } from '../../config/cfg.js';
 import { ageOn, clock, istToday } from '../../lib/clock.js';
 import { AppError } from '../../lib/errors.js';
+import { logger } from '../../lib/logger.js';
+import { printable, wrap } from '../../lib/pdfText.js';
 import { newId } from '../../lib/ids.js';
 import { msg } from '../../lib/messages.js';
 import { withTx } from '../../lib/mongo.js';
@@ -151,28 +153,54 @@ export async function preview(ctx: AuthContext, id: string) {
   return price(ctx, c);
 }
 
-async function buildPdf(snap: Record<string, any>) {
+/**
+ * The comparison PDF: A4 landscape, a label column and one column per product. Every value is wrapped inside its
+ * column and new pages are added as needed (the product names repeat at the top of each). All text goes through
+ * pdfText (standard fonts cannot print ₹, ≥… and would fail the PDF, QT-13); amounts print as "Rs.".
+ */
+export async function buildPdf(snap: Record<string, any>) {
   const doc = await PDFDocument.create();
-  const page = doc.addPage([842, 595]); // landscape for the side-by-side table
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-  let y = 560;
-  const text = (t: string, x: number, f = font, size = 9) => page.drawText(t.slice(0, 60), { x, y, size, font: f });
-  const rs = (n: number) => `Rs. ${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  text(snap.advisor.businessName, 40, bold, 14); y -= 18;
-  text(`Comparison ${snap.number} · ${snap.date} · for ${snap.customer.name}`, 40, bold, 11); y -= 22;
+  const W = 842; const H = 595; const M = 36; const LABEL = 170; const GAP = 10; const SIZE = 8; const LEAD = 10.5;
   const cols = snap.columns as Array<Record<string, any>>;
-  const w = (842 - 220) / Math.max(cols.length, 1);
-  const row = (label: string, values: string[], f = font) => { text(label, 40, bold); values.forEach((v, i) => text(v, 220 + i * w, f)); y -= 14; };
-  row('Product', cols.map((c) => `${c.name}${c.productId === snap.recommendedProductId ? ' (Recommended)' : ''}`), bold);
+  const colW = (W - 2 * M - LABEL) / Math.max(cols.length, 1);
+  const rs = (n: number) => `Rs. ${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  let page: PDFPage = doc.addPage([W, H]);
+  let y = H - M;
+  const put = (t: string, x: number, f: PDFFont = font, size = SIZE) => page.drawText(printable(f, t), { x, y, size, font: f });
+  const block = (t: unknown, x: number, width: number, f: PDFFont = font, size = SIZE) => { // a wrapped paragraph across the page
+    for (const l of wrap(f, t, size, width)) { if (y < M + size) newPage(false); page.drawText(l, { x, y, size, font: f }); y -= size + 3; }
+  };
+  const names = cols.map((c) => `${c.name}${c.productId === snap.recommendedProductId ? ' (Recommended)' : ''}`);
+  // one table row: the label and each value wrapped in its column; the row moves to a new page when it does not fit
+  const row = (label: string, values: unknown[], f: PDFFont = font, shade = false) => {
+    const lines = [wrap(bold, label, SIZE, LABEL - GAP), ...values.map((v) => wrap(f, v, SIZE, colW - GAP))];
+    const h = Math.max(...lines.map((l) => l.length)) * LEAD + 4;
+    if (y - h < M + 20) newPage(true);
+    if (shade) page.drawRectangle({ x: M - 4, y: y - h + LEAD - 3, width: W - 2 * M + 8, height: h, color: rgb(0.95, 0.96, 0.98) });
+    lines.forEach((ls, i) => ls.forEach((l, k) => page.drawText(l, { x: i === 0 ? M : M + LABEL + (i - 1) * colW, y: y - k * LEAD, size: SIZE, font: i === 0 ? bold : f })));
+    y -= h;
+    page.drawLine({ start: { x: M - 4, y: y + LEAD - 4 }, end: { x: W - M + 4, y: y + LEAD - 4 }, thickness: 0.4, color: rgb(0.85, 0.87, 0.9) });
+  };
+  function newPage(repeatHeader: boolean) {
+    page = doc.addPage([W, H]); y = H - M;
+    if (repeatHeader) { put(`Comparison ${snap.number} (continued)`, M, bold, 9); y -= 16; row('Product', names, bold, true); }
+  }
+
+  put(snap.advisor.businessName, M, bold, 14); y -= 18;
+  put(`Comparison ${snap.number} · ${snap.date} · for ${snap.customer.name}`, M, bold, 11); y -= 22;
+  row('Product', names, bold, true);
   row('Insurer / UIN', cols.map((c) => `${c.insurer} / ${c.uin}`));
   row('Agent code', cols.map((c) => c.agentCode ?? '-'));
   row('Annual premium', cols.map((c) => (c.error ? 'Cannot be offered' : `${rs(c.premium)}${c.lowest ? ' (lowest)' : ''}`)), bold);
   row('Members covered', cols.map((c) => (c.coverage ? c.coverage.message : c.error ? '-' : `All ${c.of}`)));
   for (const r of snap.rows as Array<{ label: string; values: unknown[] }>) row(r.label, r.values.map((v) => (typeof v === 'number' ? rs(v) : String(v ?? '-'))));
-  if (snap.recommendedReason) { y -= 6; text(`Why we recommend ${cols.find((c) => c.productId === snap.recommendedProductId)?.name}: ${snap.recommendedReason}`.slice(0, 140), 40); y -= 14; }
-  y -= 6; text(`Advisor: ${snap.advisor.name}   Valid for 15 days from the day it is shared.`, 40); y -= 14;
-  page.drawText(snap.disclaimer.slice(0, 180), { x: 40, y, size: 7, font });
+  y -= 8;
+  if (snap.recommendedReason) { block(`Why we recommend ${cols.find((c) => c.productId === snap.recommendedProductId)?.name}: ${snap.recommendedReason}`, M, W - 2 * M); y -= 4; }
+  block(`Advisor: ${snap.advisor.name}   Valid for 15 days from the day it is shared.`, M, W - 2 * M);
+  y -= 4;
+  block(snap.disclaimer, M, W - 2 * M, font, 7);
   return Buffer.from(await doc.save());
 }
 
@@ -207,7 +235,7 @@ export async function generate(ctx: AuthContext, id: string, req: Request) {
       disclaimer: DISCLAIMER.replace('{date}', today.split('-').reverse().join('-')),
     };
     let pdf: Buffer;
-    try { pdf = await buildPdf(snap); } catch { throw new AppError(500, 'INTERNAL_ERROR', 'QT-13'); }
+    try { pdf = await buildPdf(snap); } catch (err) { logger.error({ err, comparison: id }, 'Comparison PDF could not be created'); throw new AppError(500, 'INTERNAL_ERROR', 'QT-13'); }
     const file = await storeFile(ctx, 'QUOTATION_PDF', pdf, `${number}.pdf`, req);
     const u = await Comparison.findOneAndUpdate({ _id: id, version: c.version, status: 'DRAFT' }, { $set: { number, status: 'READY', snapshot: snap, pdfFileId: file.id }, $inc: { version: 1 } }, { new: true, session: session ?? undefined }).lean<CqDoc>();
     if (!u) throw AppError.versionConflict('comparison', null);
