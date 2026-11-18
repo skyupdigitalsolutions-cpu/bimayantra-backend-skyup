@@ -182,7 +182,8 @@ export async function offlinePayment(ctx: AuthContext, accountId: string, b: { p
   const a = await loadAcc(accountId);
   const used = await SubscriptionOrder.findOne({ reference: b.reference.trim() }, { accountId: 1 }).lean<{ accountId: string }>();
   if (used) { const adv = await advisorOf(used.accountId); throw AppError.field('reference', 'SUB-10', { account: adv?.name ?? used.accountId }); }
-  const start = b.startDate ? b.startDate.split('-').reverse().join('-') : istToday();
+  // The route's date() validator already turns DD-MM-YYYY or YYYY-MM-DD into YYYY-MM-DD; reversing it again broke addPeriod (RangeError → 500).
+  const start = b.startDate ?? istToday();
   const curEnd = istDateOf(a.subscription.endsAt);
   if (effectiveStatus(a.subscription, clock.now()) === 'ACTIVE' && start <= curEnd && !b.replace) throw new AppError(409, 'CONFIRMATION_REQUIRED', 'SUB-08', { date: dmy(curEnd), 'next date': dmy(addDays(curEnd, 1)) });
   const base = Math.round(b.amount * 100);
