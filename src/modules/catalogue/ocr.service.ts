@@ -530,12 +530,15 @@ export async function advisorResult(ctx: AuthContext, jobId: string) {
   const j = await loadJob(ctx, jobId);
   if (j.kind !== 'ADVISOR') throw AppError.notFound();
   if (!['REVIEW_REQUIRED', 'REVIEWED'].includes(j.status)) throw AppError.invalidState('OCR job', j.status);
-  // "Use these values" never blocks: values the advisor did not touch are taken when read with high confidence (as
-  // "Accept all above n%" would), and low-confidence or unread ones are left blank to type in the form. The advisor
-  // still checks every step before publishing; nothing is saved here.
-  const auto = { ...j, rows: j.rows.map((r) => (!r.decision && !flagged(r) ? { ...r, decision: 'ACCEPT' as const } : r)),
-    details: (j.details ?? []).map((r) => (!r.decision && !flaggedDetail(r) ? { ...r, decision: 'ACCEPT' as const } : r)),
-    variants: (j.variants ?? []).map((r) => (!r.decision && !flaggedDetail(r) ? { ...r, decision: 'ACCEPT' as const } : r)) };
+  // Auto-accept ALL extracted values so no manual review is needed. Every found value — high or low confidence —
+  // is accepted and pre-filled into the form. The advisor checks by editing the form fields directly.
+  // Suggestions (non-template features) are also auto-accepted so they appear as add-on features.
+  const auto = { ...j,
+    rows: j.rows.map((r) => (r.found && !r.decision ? { ...r, decision: 'ACCEPT' as const } : !r.found && !r.decision ? { ...r, decision: 'NOT_STATED' as const } : r)),
+    details: (j.details ?? []).map((r) => (!r.decision ? { ...r, decision: r.value ? 'ACCEPT' as const : 'NOT_STATED' as const } : r)),
+    variants: (j.variants ?? []).map((r) => (!r.decision ? { ...r, decision: r.value ? 'ACCEPT' as const : 'NOT_STATED' as const } : r)),
+    suggestions: (j.suggestions ?? []).map((r) => (!r.decision && r.value ? { ...r, decision: 'ACCEPT' as const } : r)),
+  };
   const out = decidedResult(auto as unknown as JobDoc);
   const left = {
     features: auto.rows.filter((r) => !r.decision).map((r) => r.name ?? r.key), // not found or not sure: to type

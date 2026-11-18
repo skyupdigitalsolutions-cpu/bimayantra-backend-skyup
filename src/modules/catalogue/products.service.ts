@@ -460,6 +460,19 @@ export async function ownCreate(ctx: AuthContext, b: { insurerId: string; typeId
   if (b.data.customFeatures) b.data.customFeatures = normaliseCustomFeatures(b.data.customFeatures, 'ADVISOR');
   b.data = await prepareData(b.typeId, b.data); // category details checked and stamped
   await publishCheck('OWN', b.insurerId, b.typeId, tpl._id, b.data, undefined, b.variants ?? []);
+  // Duplicate check: same UIN or same name+insurer in this account should not be created twice
+  if (b.data.uin) {
+    const dupUin = await Product.findOne({ accountId: ctx.accountId, kind: 'OWN', status: { $ne: 'WITHDRAWN' } }).then(async () => {
+      const versions = await ProductVersion.find({ status: 'PUBLISHED', 'data.uin': b.data.uin }).lean<Array<{ productId: any }>>();
+      const productIds = versions.map((v) => v.productId);
+      return Product.findOne({ _id: { $in: productIds }, accountId: ctx.accountId, kind: 'OWN', status: { $ne: 'WITHDRAWN' } }).lean();
+    });
+    if (dupUin) throw new AppError(409, 'DUPLICATE', 'CAT-50', { field: 'UIN', value: b.data.uin, existingProduct: dupUin.name ?? dupUin.code });
+  }
+  if (b.data.name) {
+    const dupName = await Product.findOne({ accountId: ctx.accountId, kind: 'OWN', insurerId: b.insurerId, name: b.data.name, status: { $ne: 'WITHDRAWN' } }).lean();
+    if (dupName) throw new AppError(409, 'DUPLICATE', 'CAT-51', { field: 'Product name', value: b.data.name, existingProduct: dupName.code });
+  }
   const marks = b.ocrJobId ? await ocrMarksFor(ctx, b.ocrJobId, b.typeId) : {};
   if (b.data.brochureFileId) await assertOwnFile(ctx, b.data.brochureFileId, 'BROCHURE', 'brochureFileId');
   try {
