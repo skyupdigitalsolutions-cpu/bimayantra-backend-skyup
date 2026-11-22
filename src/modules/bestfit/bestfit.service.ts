@@ -197,7 +197,7 @@ export async function rank(ctx: AuthContext, customerId: string, b: RankBody, re
       const covers = ages.length - out.length;
       const base = d.name ?? p.name ?? p.code;
       results.push({
-        productId: p._id, variantId: vr.id, variantName: vr.name, kind: p.kind, name: vars.length > 1 ? `${base} · ${vr.name}` : base, insurer: activeInsurers.get(p.insurerId), premium: pr.premium, priceVersionId: pr.priceVersionId,
+        productId: p._id, variantId: vr.id, variantName: vr.name, kind: p.kind, name: vars.length > 1 ? `${base} · ${vr.name}` : base, insurerId: p.insurerId, insurer: activeInsurers.get(p.insurerId), premium: pr.premium, priceVersionId: pr.priceVersionId,
         total, parts, covers, of: ages.length,
         ...(out.length ? { coverage: { messageId: 'QT-41', message: msg('QT-41', { n: covers, m: ages.length, names: out.map((o) => o.name).join(', ') }) } } : {}),
       });
