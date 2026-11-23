@@ -1,6 +1,7 @@
 import type { Request } from 'express';
 import type { ClientSession } from 'mongoose';
 import { cfgNum } from '../../config/cfg.js';
+import { env } from '../../config/env.js';
 import { AppError } from '../../lib/errors.js';
 import { clock, istTime } from '../../lib/clock.js';
 import { newSalt, otpCode, otpHash, randomToken, safeEqualHex, sha256 } from '../../lib/crypto.js';
@@ -15,6 +16,29 @@ import { OtpChallenge, OtpGrant, OtpLock, type OtpChallengeDoc, type OtpPurpose 
 import { sendSms } from './sms.js';
 
 const minutes = (n: number) => n * 60_000;
+
+/**
+ * How long to wait for the SMS provider before giving up (AUTH-13).
+ *
+ * MSG91's /flow call is made with realTimeResponse=1, which holds the HTTP connection until the operator answers.
+ * On Indian DLT routes that regularly takes 6-15 seconds, so the old 5-second limit rejected sends that were about
+ * to succeed and marked the challenge EXPIRED. 20 seconds covers the realistic worst case; SMS_TIMEOUT_MS overrides
+ * it if a provider turns out to be slower still.
+ */
+const SMS_TIMEOUT_MS = Number(env.SMS_TIMEOUT_MS ?? 20_000);
+
+/** Reject after `ms`, and always clear the timer so a finished send leaves nothing pending on the event loop. */
+async function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export interface OtpSendResult {
   sent: boolean;
@@ -96,14 +120,24 @@ export async function issueOtp(
 
   // "Dear ##name##" in the DLT template: the name typed at sign-up, otherwise the user's own name.
   const name = input.pendingName ?? (input.userId ? (await User.findById(input.userId, { name: 1 }).lean())?.name : null) ?? '';
+  const startedAt = Date.now();
   try {
-    await Promise.race([
+    await withTimeout(
       sendSms(mobile, 'OTP', `${code} is your Bimayantra verification code. It is valid for ${cfgNum('CFG-02')} minutes. Do not share it with anyone.`, { code, minutes: String(cfgNum('CFG-02')), name }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('SMS provider timeout')), 5_000)),
-    ]);
+      SMS_TIMEOUT_MS,
+      'SMS provider',
+    );
   } catch (err) {
-    logger.warn({ err, purpose }, 'OTP SMS could not be sent');
+    // Log what the provider actually said. Msg91Temporary / Msg91Permanent carry `detail` (path, HTTP status,
+    // round-trip time and the raw body), which is the difference between "AUTH-13 again" and a fixable cause.
+    const detail = (err as { detail?: unknown }).detail;
+    const status = (err as { status?: number }).status;
+    logger.warn(
+      { err, detail, providerStatus: status, purpose, provider: env.SMS_PROVIDER, ms: Date.now() - startedAt, timeoutMs: SMS_TIMEOUT_MS, mobile: maskedMobile },
+      'OTP SMS could not be sent',
+    );
     await OtpChallenge.updateOne({ _id: ch._id }, { $set: { sendFailed: true, status: 'EXPIRED' } });
+    await audit({ entity: 'otp', entityId: ch._id, action: 'OTP_SEND_FAILED', result: 'FAILED', after: { purpose, mobile, reason: (err as Error).message }, actor: { userId: input.userId ?? null, role: null, accountId: null } }, { req });
     throw new AppError(503, 'OTP_SEND_FAILED', 'AUTH-13');
   }
   await OtpChallenge.updateOne({ _id: ch._id }, { $set: { sent: true } });
