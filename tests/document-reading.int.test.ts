@@ -55,7 +55,7 @@ describe('P-18 background reading (GR-26)', () => {
     expect(r.status).toBe(201);
     expect(r.body.data.verify).toEqual({ reading: true, values: {} });
     const d = await until(r.body.data.id);
-    expect(d).toMatchObject({ readStatus: 'DONE', messageId: 'DOC-04', readValues: { pan: 'ABCPE1234F', name: 'Meena Iyer', dob: '15-04-1988' } });
+    expect(d).toMatchObject({ readStatus: 'DONE', messageId: 'DOC-12', missing: ['fatherName'], readValues: { pan: 'ABCPE1234F', name: 'Meena Iyer', dob: '15-04-1988' } }); // the reader is mocked here; real dates are YYYY-MM-DD (parsers)
   });
 
   it('AC-P18-4: read values are NOT applied anywhere before Confirm', async () => {
@@ -71,7 +71,7 @@ describe('P-18 background reading (GR-26)', () => {
     const { up, until } = await setup();
     const r = await up('PAN');
     const d = await until(r.body.data.id);
-    expect(d).toMatchObject({ readStatus: 'FAILED', messageId: 'DOC-10', status: 'UNCONFIRMED', version: 1 });
+    expect(d).toMatchObject({ readStatus: 'FAILED', messageId: 'DOC-13', status: 'UNCONFIRMED', version: 1 });
   });
 
   it('a reading stuck past CFG-38 (for example after a restart) counts as failed', async () => {
@@ -79,14 +79,14 @@ describe('P-18 background reading (GR-26)', () => {
     const { c, up } = await setup();
     const r = await up('PAN');
     await CustomerDocument.updateOne({ _id: r.body.data.id }, { $set: { readStartedAt: new Date(Date.now() - 6 * 60_000) } });
-    expect((await c.get(`/documents/${r.body.data.id}`)).body.data).toMatchObject({ readStatus: 'FAILED', messageId: 'DOC-10' });
+    expect((await c.get(`/documents/${r.body.data.id}`)).body.data).toMatchObject({ readStatus: 'FAILED', messageId: 'DOC-13' });
   });
 
   it('old policy: the insurer is found by a catalogue name printed on the policy', async () => {
     const ins = await Insurer.create({ name: 'Alpha General Insurance', nameKey: 'alpha general insurance', shortCode: 'ALPH9', category: 'General', irdaiRegNo: 'R-9', paymentDomains: ['a.com'], status: 'ACTIVE' });
     const { up, until } = await setup();
     const d = await until((await up('Old policy')).body.data.id);
-    expect(d.readValues).toEqual({ policyNumber: 'P-100', insurerId: ins._id });
+    expect(d.readValues).toMatchObject({ policyNumber: 'P-100', insurerId: ins._id }); // the insurer's name comes along too (Nov 2026)
   });
 
   it('a reading never overwrites a document that was confirmed meanwhile', async () => {

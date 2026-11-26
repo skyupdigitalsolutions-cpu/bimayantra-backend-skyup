@@ -48,11 +48,14 @@ async function resolvePerson(ctx: AuthContext, c: CustomerDoc, key: string): Pro
   throw AppError.field('personKey', 'VAL-22');
 }
 
-/** P-17: identity documents and old policies need the customer's personal-data consent (CU-23 / CU-30). */
+/**
+ * Client request (Nov 2026): documents can be added and confirmed without personal-data consent. Only a customer
+ * who WITHDREW it is refused (CU-30): they said no. Typing PAN / Aadhaar on the profile still needs consent (setIdentity).
+ * Provisional: OPEN-QUESTIONS Q151.
+ */
 async function assertConsent(c: CustomerDoc) {
   const consent = await personalDataConsent(c.accountId, c._id);
   if (consent === 'WITHDRAWN') throw new AppError(409, 'CONSENT_REQUIRED', 'CU-30', { Customer: c.name });
-  if (consent !== 'GIVEN') throw new AppError(409, 'CONSENT_REQUIRED', 'CU-23', { customer: c.name });
 }
 
 const decode = (enc: string | null | undefined) => (enc ? (JSON.parse(decryptField(enc)) as Record<string, unknown>) : null);
@@ -108,7 +111,7 @@ export async function upload(ctx: AuthContext, b: UploadBody, req: Request, vehi
         params: { 'Document type': type === 'Other' && b.name ? b.name : type, n: version },
         verify: !isVerify(type) ? null
           : reading ? { reading: true, values: {} } // the check screen asks again until the reading is done
-          : { reading: false, values: {}, messageId: 'DOC-10' as MessageId, message: msg('DOC-10') },
+          : { reading: false, values: {}, messageId: 'DOC-14' as MessageId, message: msg('DOC-14') }, // reading switched off
       };
     } catch (e) {
       if (isDuplicateKey(e, 'one_version_number_per_series') && attempt < 4) continue; // a parallel upload took this number
@@ -132,10 +135,8 @@ export function startReading(ctx: AuthContext, documentId: string, fileId: strin
       const timeout = new Promise<never>((_, fail) => setTimeout(() => fail(new Error('OCR time limit (CFG-38) reached')), limit).unref());
       const read = await Promise.race([readDocument(type, bytes, file.mime), timeout]);
       const values: Record<string, unknown> = { ...(read?.values ?? {}) };
-      if (type === 'Old policy' && read?.text) { // the insurer: a catalogue name printed on the policy
-        const text = read.text.toLowerCase();
-        const hit = (await Insurer.find({ ownerAccountId: { $in: [null, ctx.accountId] } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>()).find((i) => text.includes(i.name.toLowerCase()));
-        if (hit) values.insurerId = hit._id;
+      if (type === 'Old policy' && read?.text) { // company, category, product and variant from the catalogue (Nov 2026)
+        Object.assign(values, await (await import('./policyReader.js')).matchPolicyCatalogue(ctx.accountId!, read.text));
       }
       await CustomerDocument.updateOne({ _id: documentId, readStatus: 'PENDING' }, { $set: { readStatus: 'DONE', readValuesEnc: encryptField(JSON.stringify(values)) } });
     } catch (e) {
@@ -155,17 +156,18 @@ function readState(d: Pick<DocumentDoc, 'readStatus' | 'readStartedAt'>): 'OFF' 
 // ── Verify and Confirm (P-18 steps 5–6) ───────────────────────────────────────
 
 const confirmSchemas: Record<string, z.ZodTypeAny> = {
-  Aadhaar: z.object({ name: required(personName()), dob: optional(dateOfBirth()), gender: optional(enumOf(GENDERS)), aadhaar: required(aadhaar()) }).strict(),
+  Aadhaar: z.object({ name: required(personName()), dob: optional(dateOfBirth()), gender: optional(enumOf(GENDERS)), aadhaar: required(aadhaar()), address: optional(z.string().trim().max(300, 'VAL-22')) }).strict(),
   PAN: z.object({ name: required(personName()), fatherName: optional(personName()), dob: optional(dateOfBirth()), pan: required(pan()) }).strict(),
   'Old policy': z.object({
     insurerId: required(recordId('ins')), policyNumber: required(policyNumber()), productName: optional(shortText()),
+    typeId: optional(z.string().regex(/^typ_[a-f0-9]{28}$/, 'VAL-22')), productId: optional(recordId('prd')), variantId: optional(z.string().max(40)), variantName: optional(shortText()), issueDate: optional(date()),
     startDate: optional(date()), endDate: optional(date()), sumInsured: optional(rupees()), premium: optional(rupees()),
     insuredPeople: z.array(personName()).max(20).optional(), nominees: z.array(personName()).max(20).optional(),
   }).strict(),
 };
 const confirmLabels = {
-  name: 'Name', dob: 'Date of birth', gender: 'Gender', aadhaar: 'Aadhaar number', fatherName: "Father's name", pan: 'PAN',
-  insurerId: 'Insurer', policyNumber: 'Policy number', productName: 'Product name', startDate: 'Start date', endDate: 'End date',
+  name: 'Name', dob: 'Date of birth', gender: 'Gender', aadhaar: 'Aadhaar number', address: 'Address', fatherName: "Father's name", pan: 'PAN',
+  insurerId: 'Insurer', policyNumber: 'Policy number', productName: 'Product name', typeId: 'Category', productId: 'Product', variantId: 'Variant', variantName: 'Variant', issueDate: 'Issue date', startDate: 'Start date', endDate: 'End date',
   sumInsured: 'Sum insured', premium: 'Premium', insuredPeople: 'Insured people', nominees: 'Nominees',
 };
 
@@ -247,6 +249,33 @@ export async function changeLabel(ctx: AuthContext, id: string, b: { rev: number
 
 // ── Read ───────────────────────────────────────────────────────────────────────
 
+/** What the check screen expects from each document, in the order it shows them. */
+const EXPECTED: Record<string, Array<[string, string]>> = {
+  Aadhaar: [['name', 'name'], ['aadhaar', 'Aadhaar number'], ['dob', 'date of birth'], ['gender', 'gender'], ['address', 'address']],
+  PAN: [['name', 'name'], ['pan', 'PAN'], ['fatherName', "father's name"], ['dob', 'date of birth']],
+  'Old policy': [['policyNumber', 'policy number'], ['typeId', 'category'], ['insurerId', 'company'], ['productName', 'product'], ['variantName', 'variant'], ['startDate', 'start date'], ['endDate', 'end date'], ['sumInsured', 'sum insured'], ['premium', 'premium']],
+};
+const joinAnd = (l: string[]) => (l.length <= 1 ? l.join('') : `${l.slice(0, -1).join(', ')} and ${l.at(-1)}`);
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/**
+ * The check screen's message, saying exactly what was and was not read (client change, Nov 2026): DOC-04 all read,
+ * DOC-12 some read (names the rest), DOC-10 nothing read, DOC-13 the reading failed, DOC-14 reading is switched off.
+ * `missing` lists the fields to type, so the screen can mark them.
+ */
+export function readMessage(type: string, state: string, values: Record<string, unknown> | null) {
+  const want = EXPECTED[type] ?? [];
+  const has = (k: string) => values?.[k] !== undefined && values?.[k] !== null && values?.[k] !== '';
+  const missing = want.filter(([k]) => !has(k));
+  const label = ([k, l]: [string, string]) => (k === 'aadhaar' && values?.aadhaarMasked ? 'Aadhaar number (it is masked on this copy)' : l);
+  const out = (messageId: MessageId, params: Record<string, string> = {}) => ({ messageId, message: msg(messageId, params), missing: missing.map(([k]) => k) });
+  if (state === 'OFF') return out('DOC-14');
+  if (state === 'FAILED') return out('DOC-13');
+  if (!want.some(([k]) => has(k))) return out('DOC-10');
+  if (!missing.length) return out('DOC-04');
+  return out('DOC-12', { found: joinAnd(want.filter(([k]) => has(k)).map(label)), missing: cap(joinAnd(missing.map(label))) });
+}
+
 /** One version with its read/confirmed values (for the verify screen) and its label history. */
 export async function getDocument(ctx: AuthContext, id: string) {
   const d = await CustomerDocument.findOne({ _id: id, accountId: ctx.accountId }).select('+readValuesEnc +confirmedValuesEnc').lean<DocumentDoc & { readValuesEnc?: string; confirmedValuesEnc?: string }>();
@@ -260,12 +289,7 @@ export async function getDocument(ctx: AuthContext, id: string) {
     readValues: decode(d.readValuesEnc), confirmedValues: decode(d.confirmedValuesEnc),
     history: [{ event: 'UPLOADED', name: d.originalName, by: d.uploadedBy, at: d.createdAt }, ...labels.map((l) => ({ event: 'LABEL_CHANGED', from: l.from, to: l.to, by: l.by, at: l.createdAt }))],
     readStatus: readState(d),
-    ...(d.status === 'UNCONFIRMED' && readState(d) !== 'PENDING'
-      ? (() => {
-          const found = Object.keys(decode(d.readValuesEnc) ?? {}).length > 0;
-          return { messageId: found ? 'DOC-04' : 'DOC-10', message: msg(found ? 'DOC-04' : 'DOC-10') };
-        })()
-      : {}),
+    ...(d.status === 'UNCONFIRMED' && readState(d) !== 'PENDING' ? readMessage(d.type, readState(d), decode(d.readValuesEnc)) : {}),
   };
 }
 

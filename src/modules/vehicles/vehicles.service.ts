@@ -13,7 +13,7 @@ import { FUELS, VEHICLE_TYPES, Vehicle, VEHICLE_REG_INDEX, type VehicleDoc } fro
 
 export interface CreateBody {
   registration: string; vehicleType: string; make: string; model: string; year: number; fuel: string;
-  rcFileId: string; photos: Array<{ slot: string; fileId: string }>;
+  rcFileId?: string | null; photos: Array<{ slot: string; fileId: string }>;
 }
 
 async function loadCustomer(ctx: AuthContext, id: string) {
@@ -43,8 +43,8 @@ async function addVersion(ctx: AuthContext, v: Pick<VehicleDoc, '_id' | 'custome
 }
 
 /**
- * + Vehicle (P-54 steps 1–3). Everything is saved together or not at all: the vehicle, its RC and at least
- * CFG-154 photos (one per CFG-155 slot). A vehicle can never exist with too few photos (AC-P54-1), and closing
+ * + Vehicle (P-54 steps 1–3). Everything is saved together or not at all: the vehicle, its RC (optional) and at least
+ * CFG-154 photos (one per CFG-155 slot; 0 by default since Nov 2026, so photos are optional). A vehicle can never exist with too few photos (AC-P54-1), and closing
  * the form midway saves nothing.
  */
 export async function create(ctx: AuthContext, customerId: string, b: CreateBody, req: Request) {
@@ -59,7 +59,7 @@ export async function create(ctx: AuthContext, customerId: string, b: CreateBody
   if (b.photos.some((p) => !slots.includes(p.slot))) throw AppError.field('photos', 'VAL-22');
   if (new Set(b.photos.map((p) => p.slot)).size !== b.photos.length) throw AppError.field('photos', 'VAL-22'); // one per slot
   if (b.photos.length < min) throw AppError.field('photos', 'VEH-02', { 'CFG-154': min });
-  await assertOwnFile(ctx, b.rcFileId, 'CUSTOMER_DOCUMENT', 'rcFileId');
+  if (b.rcFileId) await assertOwnFile(ctx, b.rcFileId, 'CUSTOMER_DOCUMENT', 'rcFileId');
   for (const p of b.photos) await assertOwnFile(ctx, p.fileId, 'CUSTOMER_DOCUMENT', 'photos');
 
   const dup = () => new AppError(409, 'DUPLICATE', 'VEH-03', { registration: b.registration, customer: c.name });
@@ -81,7 +81,7 @@ export async function create(ctx: AuthContext, customerId: string, b: CreateBody
       throw e;
     }
     const vd = created!.toObject() as VehicleDoc;
-    await addVersion(ctx, vd, 'Vehicle RC', b.rcFileId, null, session);
+    if (b.rcFileId) await addVersion(ctx, vd, 'Vehicle RC', b.rcFileId, null, session);
     for (const p of b.photos) await addVersion(ctx, vd, 'Vehicle photo', p.fileId, p.slot, session);
     await audit({ entity: 'vehicle', entityId: vd._id, action: 'VEHICLE_ADDED', after: { customerId, registration: b.registration, photos: b.photos.map((p) => p.slot) } }, { req, session });
     return vd;

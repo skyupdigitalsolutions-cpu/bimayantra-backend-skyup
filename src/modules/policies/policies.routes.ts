@@ -27,9 +27,15 @@ export function policyRoutes() {
   r.use(authenticate, allow('policies.view'));
   r.get('/', validate({ query: z.object({ status: z.string().max(30).optional(), customerId: z.string().max(40).optional() }) }), async (req, res) =>
     sendData(res, await svc.list(req.auth!, { status: req.query.status ? String(req.query.status) : undefined, customerId: req.query.customerId ? String(req.query.customerId) : undefined })));
+  // Client change (Nov 2026): read an uploaded policy document and suggest the values for "Record existing policy".
+  r.post('/existing/read', allow('policies.manage'), writable, validate({ body: z.object({ fileId: required(recordId('fil')) }).strict() }, { fileId: 'Policy document' }), async (req, res) => {
+    const { readPolicyFile } = await import('../documents/policyReader.js');
+    const out = await readPolicyFile(req.auth!, String(req.body.fileId), req);
+    sendData(res, out);
+  });
   r.post('/existing', allow('policies.manage'), writable, validate({ body: z.object({
     ...fields, customerId: required(z.string().regex(/^cus_[a-f0-9]{28}$/)), insurerId: required(z.string().regex(/^ins_[a-f0-9]{28}$/)), productId: z.string().regex(/^prd_[a-f0-9]{28}$/).nullable().optional(),
-    productName: optional(shortText()), typeId: required(z.string().regex(/^typ_[a-f0-9]{28}$/)), soldByMe: z.boolean(), insured: z.array(z.string().regex(/^[CF]:(cus|fam)_[a-f0-9]{28}$/)).max(20), confirmExpired: z.boolean().optional(),
+    productName: optional(shortText()), variantId: z.string().regex(/^[a-z]{3}_[a-f0-9]{28}$/).nullable().optional(), typeId: required(z.string().regex(/^typ_[a-f0-9]{28}$/)), soldByMe: z.boolean(), insured: z.array(z.string().regex(/^[CF]:(cus|fam)_[a-f0-9]{28}$/)).max(20), confirmExpired: z.boolean().optional(),
   }).strict() }, labels), idempotent(), async (req, res) => {
     const out = await svc.existing(req.auth!, req.body, req);
     sendDone(res, out.policy, 'POL-09', out.params, 201);

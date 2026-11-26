@@ -165,7 +165,7 @@ export async function issue(ctx: AuthContext, id: string, b: PolicyFields & { ve
  * P-34 Record an existing policy (no quotation or payment, AC-P34-1). Past end (or due) date: POL-08 must be confirmed;
  * the policy is EXPIRED and its cycle DUE, or LAPSED once the grace period has passed (AC-P34-2).
  */
-export async function existing(ctx: AuthContext, b: PolicyFields & { customerId: string; insurerId: string; productId?: string | null; productName?: string | null; typeId: string; soldByMe: boolean; insured: string[]; confirmExpired?: boolean }, req: Request) {
+export async function existing(ctx: AuthContext, b: PolicyFields & { customerId: string; insurerId: string; productId?: string | null; productName?: string | null; variantId?: string | null; typeId: string; soldByMe: boolean; insured: string[]; confirmExpired?: boolean }, req: Request) {
   const cus = await Customer.findOne({ _id: b.customerId, accountId: ctx.accountId }, { name: 1, dob: 1, status: 1 }).lean<{ _id: string; name: string; dob: string | null; status: string }>();
   if (!cus) throw AppError.notFound();
   if (cus.status !== 'ACTIVE') throw AppError.invalidState('customer', cus.status);
@@ -176,6 +176,11 @@ export async function existing(ctx: AuthContext, b: PolicyFields & { customerId:
     const pr = await Product.findOne({ _id: b.productId, insurerId: b.insurerId, $or: [{ kind: 'VERIFIED' }, { kind: 'OWN', accountId: ctx.accountId }] }).lean<ProductDoc>();
     if (!pr) throw AppError.field('productId', 'VAL-22');
     productName = pr.name ?? pr.code;
+    // The variant (Nov 2026: read from the policy document or chosen) must belong to the product's live version.
+    if (b.variantId) {
+      const { ProductVariant } = await import('../catalogue/variant.model.js');
+      if (!pr.publishedVersionId || !(await ProductVariant.exists({ _id: b.variantId, productVersionId: pr.publishedVersionId }))) throw AppError.field('variantId', 'VAL-22');
+    }
   } else if (!productName) throw AppError.field('productName', 'GEN-01', { 'Field label': 'Product name' }); // AC-P34-3: not in catalogue, by name
   const fam = await FamilyMember.find({ customerId: b.customerId, accountId: ctx.accountId, status: 'ACTIVE' }, { name: 1, dob: 1, relationship: 1 }).lean<Array<{ _id: string; name: string; dob: string | null; relationship: string }>>();
   const everyone = [{ key: `C:${cus._id}`, name: cus.name, relationship: 'Self', dob: cus.dob }, ...fam.map((f) => ({ key: `F:${f._id}`, name: f.name, relationship: f.relationship, dob: f.dob }))];
@@ -191,7 +196,7 @@ export async function existing(ctx: AuthContext, b: PolicyFields & { customerId:
   try {
     const pol = await withTx(async (session) => {
       const fields = { policyNumber: b.policyNumber.trim(), issueDate: iso(b.issueDate), startDate: iso(b.startDate), endDate: iso(b.endDate), frequency: b.frequency, nextDueDate: b.nextDueDate ? iso(b.nextDueDate) : null, sumInsured: b.sumInsured, premium: b.premium, documentFileId: b.documentFileId ?? null, notes: b.notes ?? null, expectedCommission: b.expectedCommission ?? null };
-      const [pol] = await Policy.create([{ accountId: ctx.accountId, customerId: b.customerId, source: 'EXISTING', status: past ? 'EXPIRED' : 'ISSUED', insurerId: b.insurerId, productId: b.productId ?? null, productName, typeId: b.typeId, soldByMe: b.soldByMe, insured,
+      const [pol] = await Policy.create([{ accountId: ctx.accountId, customerId: b.customerId, source: 'EXISTING', status: past ? 'EXPIRED' : 'ISSUED', insurerId: b.insurerId, productId: b.productId ?? null, productName, variantId: b.productId ? b.variantId ?? null : null, typeId: b.typeId, soldByMe: b.soldByMe, insured,
         ...fields, policyNumberKey: `${b.insurerId}|${fields.policyNumber.toUpperCase()}`, gracePeriodDays: grace, issuedAt: clock.now(), createdBy: ctx.userId,
         history: [{ at: clock.now(), by: ctx.userId, action: 'RECORDED_EXISTING', before: null, after: fields }] }], { session: session ?? undefined });
       const graceUntil = addDays(due, grace);

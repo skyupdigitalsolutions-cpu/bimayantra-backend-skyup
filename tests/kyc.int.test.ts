@@ -53,7 +53,7 @@ describe('FLD-22 file store', () => {
     const adv = await registerAdvisor();
     const exe = await upload(adv.token, 'KYC_LICENCE', EXE, 'licence.pdf');
     expect(exe.status).toBe(400);
-    expect(JSON.stringify(exe.body)).toContain('This file type is not allowed. Upload one of: PDF, JPG, JPEG, PNG.');
+    expect(JSON.stringify(exe.body)).toContain('This file type is not allowed. Upload a PDF, JPG, JPEG or PNG file of up to 10 MB.');
     expect((await upload(adv.token, 'KYC_LICENCE', PNG, 'licence.pdf')).body.data.type).toBe('PNG');
   });
 
@@ -74,7 +74,7 @@ describe('FLD-22 file store', () => {
     const bigPng = Buffer.concat([PNG.subarray(0, PNG.length - 12), Buffer.alloc(2 * 1024 * 1024 + 10, 0), PNG.subarray(PNG.length - 12)]);
     const res = await upload(adv.token, 'PROFILE_PHOTO', bigPng, 'big.png');
     expect(fieldIds(res)).toEqual(['VAL-24']);
-    expect(JSON.stringify(res.body)).toContain('This file is larger than 2 MB. Upload a smaller file.');
+    expect(JSON.stringify(res.body)).toContain('The largest allowed is 2 MB (JPG, JPEG or PNG). Upload a smaller file.');
   });
 
   it('files are never changed or deleted (object lock)', async () => {

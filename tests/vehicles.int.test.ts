@@ -3,7 +3,7 @@
  */
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { app, as, err, login, newMobile, registerAdvisor, resetState, startTestEnv, stepUp, stopTestEnv } from './helpers.js';
+import { app, as, err, login, newMobile, registerAdvisor, resetState, startTestEnv, stepUp, stopTestEnv, setCfg } from './helpers.js';
 import { CustomerDocument } from '../src/modules/documents/document.model.js';
 import { Vehicle } from '../src/modules/vehicles/vehicle.model.js';
 import { ConfigValue, loadConfigOverrides } from '../src/config/cfg.js';
@@ -32,8 +32,16 @@ async function setup() {
 }
 
 describe('P-54 vehicles', () => {
+  it('client change (Nov 2026): a vehicle can be saved with no RC and no photos', async () => {
+    const { cus, c } = await setup();
+    const res = await c.post(`/customers/${cus.id}/vehicles`, { registration: 'KA05MN4321', vehicleType: 'Private car', make: 'Tata', model: 'Nexon', year: 2022, fuel: 'Diesel' });
+    expect(res.status).toBe(201);
+    expect(await CustomerDocument.countDocuments({ type: { $in: ['Vehicle RC', 'Vehicle photo'] } })).toBe(0);
+  });
+
   it('AC-P54-1: fewer than CFG-154 photos cannot be saved (VEH-02), and nothing is saved', async () => {
     const { cus, add } = await setup();
+    await setCfg('CFG-154', 4); // photos are optional by default (0); an admin can still ask for some
     const res = await add(cus.id, {}, 3);
     expect(fieldIds(res)).toEqual({ photos: 'VEH-02' });
     expect(JSON.stringify(res.body)).toContain('Add at least 4 photos before saving.');

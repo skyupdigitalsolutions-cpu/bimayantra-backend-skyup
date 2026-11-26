@@ -75,7 +75,7 @@ describe('P-18 document vault', () => {
   it('AC-P18-4: nothing read from Aadhaar/PAN is saved before Confirm; the verify screen opens for manual entry (DOC-10)', async () => {
     const { c, cus, up } = await setup();
     const res = await up('PAN');
-    expect(res.body.data).toMatchObject({ status: 'UNCONFIRMED', verify: { messageId: 'DOC-10', message: 'We could not read this document. Type the details yourself, then select Confirm.' } });
+    expect(res.body.data).toMatchObject({ status: 'UNCONFIRMED', verify: { messageId: 'DOC-14', message: 'Automatic reading is switched off. Type the details yourself, then select Confirm.' } });
     const cust = await Customer.findById(cus.id).select('+identity.panEnc').lean();
     expect(cust!.identity?.panEnc ?? null).toBeNull(); // not copied before Confirm
     expect((await c.get(`/customers/${cus.id}/documents`)).body.data.missing.message).toBe('Missing for Meena Iyer: Aadhaar, PAN (waiting to be checked).');
@@ -107,9 +107,9 @@ describe('P-18 document vault', () => {
     expect(r.body.data.identity).toMatchObject({ copied: false, differs: true, current: 'ABCXX1234F', fromDocument: 'ZYXXX9876K' });
   });
 
-  it('identity documents and old policies need personal-data consent (CU-23 / CU-30)', async () => {
+  it('documents need no personal-data consent (client change, Nov 2026); a withdrawn consent still blocks (CU-30)', async () => {
     const none = await setup({ consent: null });
-    expect(err(await none.up('Aadhaar'))).toMatchObject({ status: 409, messageId: 'CU-23' });
+    expect((await none.up('Aadhaar')).status).toBe(201);
     expect((await none.up('Medical report')).status).toBe(201); // other types do not
     const withdrawn = await setup({ consent: 'WITHDRAWN' });
     expect(err(await withdrawn.up('Old policy'))).toMatchObject({ status: 409, messageId: 'CU-30' });

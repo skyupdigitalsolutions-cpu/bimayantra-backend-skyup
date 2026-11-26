@@ -25,7 +25,7 @@ const createBody = z.object({
   model: required(shortText()),
   year: required(wholeNumber(() => cfgNum('CFG-181'), () => Number(istToday().slice(0, 4)))),
   fuel: required(enumOf(FUELS)),
-  rcFileId: required(recordId('fil')),
+  rcFileId: recordId('fil').nullable().optional(), // client change (Nov 2026): the RC is optional
   photos: z.array(z.object({ slot: z.string().max(40), fileId: recordId('fil') }).strict()).max(20).default([]),
 }).strict();
 

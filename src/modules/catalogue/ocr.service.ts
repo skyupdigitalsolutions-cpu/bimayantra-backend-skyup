@@ -103,26 +103,57 @@ export function extract(dataType: string, rest: string, featureName = ''): strin
   return s.slice(0, 200);
 }
 
-/** Find each feature on the pages: the line naming it (or all its main words), value from the rest of that line or the next. */
+/**
+ * Brochure wording differs from the template's feature names (client report, Nov 2026: every feature read as "Not
+ * stated"). Both sides are normalised the same way before matching: British/American spelling (hospitalisation /
+ * hospitalization), hyphens and joined words (in-patient / inpatient, day-care / daycare, new-born / newborn).
+ */
+export function normFeatureText(s: string) {
+  return s.toLowerCase()
+    .replace(/[‐-―-]/g, ' ')
+    .replace(/i[sz]ation/g, 'isation').replace(/i[sz]ed\b/g, 'ised')
+    .replace(/\bin\s+patient/g, 'inpatient').replace(/\bout\s+patient/g, 'outpatient').replace(/\bday\s+care/g, 'daycare')
+    .replace(/\bnew\s+born/g, 'newborn').replace(/\bpre\s+existing/g, 'preexisting').replace(/\bco\s+pay(ment)?/g, 'copay')
+    .replace(/\s+/g, ' ');
+}
+/** Words that only describe the kind of feature: a brochure line often leaves them out ("Maternity" for "Maternity cover"). */
+const GENERIC = new Set(['cover', 'covers', 'coverage', 'treatment', 'treatments', 'benefit', 'benefits', 'expenses', 'expense', 'procedures', 'procedure', 'charges', 'period', 'medical']);
+/** Other names brochures use for a template feature (normalised words). */
+const ALIASES: Record<string, string[][]> = {
+  'opd cover': [['outpatient'], ['opd']],
+  'road ambulance': [['ambulance']],
+  'newborn cover': [['newborn']],
+  'domiciliary treatment': [['domiciliary']],
+  'preexisting disease waiting period': [['preexisting', 'disease'], ['ped', 'waiting']],
+};
+/** Find each feature on the pages: the line naming it (or all its main words), value from the rest of that line or the next two. */
 /** Words too common to identify a feature on their own ("and", "for"…). */
 const FILLER = new Set(['and', 'the', 'for', 'with', 'per', 'any', 'all', 'from', 'into', 'its', 'are', 'not']);
+const wordRe = (w: string) => new RegExp(`(^|[^a-z0-9])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
 export function matchFeatures(features: Feature[], pages: Page[]) {
   return features.map((f) => {
     // Every meaningful word of the name must be on the line, short ones included (OPD, ICU, PED, NCB): "OPD cover"
     // matched on "cover" alone used to take any "Covered" line. Words match at a word start (plural endings allowed).
-    const names = f.name.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !FILLER.has(w));
-    const words = names.map((w) => new RegExp(`(^|[^a-z0-9])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    const name = normFeatureText(f.name).trim();
+    const all = name.split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !FILLER.has(w));
+    const core = all.filter((w) => !GENERIC.has(w));
+    const wordSets = [all, ...(core.length && core.length < all.length ? [core] : []), ...(ALIASES[name] ?? [])].map((ws) => ws.map(wordRe));
     let best: { value: string; confidence: number; page: number } | null = null;
     for (const pg of pages) {
       const lines = pg.text.split(/\r?\n/);
-      lines.forEach((line, i) => {
+      const normed = lines.map(normFeatureText);
+      normed.forEach((low, i) => {
         if (best) return;
-        const low = line.toLowerCase();
-        const exact = low.includes(f.name.toLowerCase());
-        if (!exact && !(words.length && words.every((w) => w.test(low)))) return;
-        const after = exact ? line.slice(low.indexOf(f.name.toLowerCase()) + f.name.length) : line;
-        const value = extract(f.dataType, after.replace(/^[\s:–-]+/, ''), f.name) ?? extract(f.dataType, lines[i + 1] ?? '', f.name);
-        if (value !== null) best = { value, confidence: Math.round(pg.confidence * (exact ? 1 : 0.8) * 100) / 100, page: pg.number };
+        const exact = low.includes(name);
+        const set = exact ? 0 : wordSets.findIndex((ws) => ws.length > 0 && ws.every((w) => w.test(low)));
+        if (!exact && set < 0) return;
+        const after = exact ? low.slice(low.indexOf(name) + name.length) : low;
+        let value = extract(f.dataType, after.replace(/^[\s:–-]+/, ''), f.name) ?? extract(f.dataType, normed[i + 1] ?? '', f.name) ?? extract(f.dataType, normed[i + 2] ?? '', f.name);
+        let factor = exact ? 1 : set === 0 ? 0.8 : 0.7;
+        // A Yes/No feature named in the brochure with no word either way is offered (it is listed as a benefit),
+        // unless the line is about exclusions. Lower confidence, so it is easy to spot and change.
+        if (value === null && f.dataType === 'Yes/No' && !/exclu|not covered|not payable/.test(`${low} ${normed[i - 1] ?? ''}`)) { value = 'Yes'; factor *= 0.75; }
+        if (value !== null) best = { value, confidence: Math.round(pg.confidence * factor * 100) / 100, page: pg.number };
       });
       if (best) break;
     }

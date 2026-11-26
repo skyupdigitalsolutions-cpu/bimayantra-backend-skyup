@@ -9,6 +9,7 @@ import { AppError } from '../../lib/errors.js';
 import { FILE_PURPOSES } from './file.model.js';
 import type { Capability } from '../rbac/capabilities.js';
 import * as files from './files.service.js';
+import { fileRule, orList } from './files.service.js';
 
 /**
  * POST /v1/files?purpose=KYC_PAN   body = the raw file bytes, header X-File-Name = original name.
@@ -45,7 +46,11 @@ export function fileRoutes() {
     (req, res, next) => allow(UPLOAD_CAPABILITY[String(req.query.purpose) as (typeof FILE_PURPOSES)[number]])(req, res, next),
     writable,
     (req, res, next) => express.raw({ type: () => true, limit: maxBytes() })(req, res, (e?: unknown) => {
-      if ((e as { type?: string } | undefined)?.type === 'entity.too.large') return next(AppError.field('file', 'VAL-24', { 'size limit': cfgNum('CFG-27') }));
+      if ((e as { type?: string } | undefined)?.type === 'entity.too.large') {
+        const rule = fileRule(String(req.query.purpose) as (typeof FILE_PURPOSES)[number]);
+        const size = Number(req.headers['content-length'] ?? 0) / 1024 / 1024;
+        return next(AppError.field('file', 'VAL-24', { 'allowed types': orList(rule.types), 'size limit': rule.maxMb, 'file size': size ? size.toFixed(1) : `more than ${rule.maxMb}` }));
+      }
       next(e);
     }),
     async (req, res) => {

@@ -145,7 +145,7 @@ const DEFS = {
   'CFG-111': { label: 'Code length', unit: 'characters', value: { min: 2, max: 20 }, change: 'Release' },
   'CFG-107': { label: 'Policy number length', unit: 'characters', value: { min: 3, max: 40 }, change: 'Release' },
   'CFG-135': { label: 'Uploaded file kept before the form is saved', unit: 'hours', value: 24, change: 'ADM', range: [1, 168] },
-  'CFG-154': { label: 'Fewest photos per vehicle', unit: 'count', value: 4, change: 'ADM', range: [1, 20] },
+  'CFG-154': { label: 'Fewest photos per vehicle', unit: 'count', value: 0, change: 'ADM', range: [0, 20] }, // client change (Nov 2026): photos optional
   'CFG-155': { label: 'Vehicle photo slots', value: ['Front', 'Rear', 'Left', 'Right', 'Odometer', 'Chassis number'], change: 'ADM' },
   'CFG-156': { label: 'Vehicles per client', unit: 'count', value: 10, change: 'ADM', range: [1, 100] },
   'CFG-171': { label: 'Document types', value: ['Aadhaar', 'PAN', 'Old policy', 'Vehicle RC', 'Vehicle photo', 'Medical report', 'Address proof', 'Income proof', 'Photo', 'Other'], change: 'ADM' },

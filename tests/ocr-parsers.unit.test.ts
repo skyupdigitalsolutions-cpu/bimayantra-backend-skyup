@@ -20,7 +20,7 @@ RAMESH IYER
 जन्म की तारीख / Date of Birth
 15/04/1988
 हस्ताक्षर / Signature`;
-    expect(parsePan(text)).toEqual({ pan: 'ABCPE1234F', name: 'Meena Iyer', fatherName: 'Ramesh Iyer', dob: '15-04-1988' });
+    expect(parsePan(text)).toEqual({ pan: 'ABCPE1234F', name: 'Meena Iyer', fatherName: 'Ramesh Iyer', dob: '1988-04-15' });
   });
 
   it('old layout: no labels; name and father\u2019s name are the two lines above the date of birth', () => {
@@ -31,7 +31,7 @@ SURESH PATIL
 Permanent Account Number
 IARPB4117E
 Signature`;
-    expect(parsePan(text)).toEqual({ pan: 'IARPB4117E', name: 'Harish Patil', fatherName: 'Suresh Patil', dob: '07-09-2003' });
+    expect(parsePan(text)).toEqual({ pan: 'IARPB4117E', name: 'Harish Patil', fatherName: 'Suresh Patil', dob: '2003-09-07' });
   });
 
   it('a blurred card gives only what it can read, never a guess', () => {
@@ -50,7 +50,7 @@ Meena Iyer
 ${spaced}
 VID : 9134 5678 2345 6789
 मेरा आधार, मेरी पहचान`;
-    expect(parseAadhaar(text)).toEqual({ aadhaar: AADHAAR, name: 'Meena Iyer', dob: '15-04-1988', gender: 'FEMALE' });
+    expect(parseAadhaar(text)).toEqual({ aadhaar: AADHAAR, name: 'Meena Iyer', dob: '1988-04-15', gender: 'FEMALE' });
   });
 
   it('a masked copy (CU-17) gives no number; a misread number that fails the check is left empty', () => {
@@ -68,6 +68,6 @@ Policy No: 2311/40125678/00/000
 Period of Insurance: From 01/04/2025 00:00 To 31/03/2026 23:59
 Sum Insured: ₹ 5,00,000
 Total Premium (incl. GST): ₹ 12,500.00`;
-    expect(parseOldPolicy(text)).toEqual({ policyNumber: '2311/40125678/00/000', startDate: '01-04-2025', endDate: '31-03-2026', sumInsured: '5,00,000', premium: '12,500.00' });
+    expect(parseOldPolicy(text)).toEqual({ policyNumber: '2311/40125678/00/000', startDate: '2025-04-01', endDate: '2026-03-31', sumInsured: '5,00,000', premium: '12,500.00' });
   });
 });

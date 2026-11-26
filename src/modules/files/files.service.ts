@@ -74,24 +74,34 @@ function cleanName(raw: string | undefined, type: string) {
 /** Who owns a file: the advisor's account, or 'SKYUP' for files SkyUp Staff and Admins upload (brochures, P-23). */
 export const ownerOf = (ctx: AuthContext) => ctx.accountId ?? (ctx.role === 'STF' || ctx.role === 'ADM' ? 'SKYUP' : null);
 
+/** "JPG, JPEG or PNG" */
+export const orList = (l: string[]) => (l.length <= 1 ? l.join('') : `${l.slice(0, -1).join(', ')} or ${l.at(-1)}`);
+/** The formats and size limit for one purpose (also sent to the screens in /reference as fileRules). */
+export function fileRule(purpose: FilePurpose) {
+  const image = IMAGE_PURPOSES.includes(purpose);
+  return { types: cfgList(image ? 'CFG-126' : 'CFG-26'), maxMb: cfgNum(image ? 'CFG-127' : purpose === 'BROCHURE' ? 'CFG-29' : 'CFG-27') };
+}
+
 export async function upload(ctx: AuthContext, purpose: FilePurpose, bytes: Buffer, fileName: string | undefined, req: Request) {
   const ownerKey = ownerOf(ctx);
   if (!ownerKey) throw AppError.forbidden();
   const image = IMAGE_PURPOSES.includes(purpose);
   const list = cfgList(image ? 'CFG-126' : 'CFG-26');
   const maxMb = cfgNum(image ? 'CFG-127' : purpose === 'BROCHURE' ? 'CFG-29' : 'CFG-27'); // CFG-29: brochures
+  // Every file message names the allowed formats and the size limit for this kind of file (client change, Nov 2026).
+  const rule = { 'allowed types': orList(list), 'size limit': maxMb };
 
   // P-52: the server's own account export (a ZIP). Only the server writes this purpose (files.system); uploads never can.
   if (purpose === 'ACCOUNT_EXPORT') {
-    if (!(bytes.length > 4 && bytes.readUInt32LE(0) === 0x04034b50)) throw AppError.field('file', 'VAL-26');
+    if (!(bytes.length > 4 && bytes.readUInt32LE(0) === 0x04034b50)) throw AppError.field('file', 'VAL-26', { 'allowed types': 'ZIP', 'size limit': maxMb });
     return storeServerFile(ctx, purpose, bytes, fileName ?? 'export.zip', 'ZIP', 'application/zip');
   }
   const detected = detectType(bytes);
   if (!detected || !allowedTypes(list).has(detected.type)) {
-    throw AppError.field('file', 'VAL-23', { 'allowed types': list.join(', ') });
+    throw AppError.field('file', 'VAL-23', rule);
   }
-  if (bytes.length > maxMb * 1024 * 1024) throw AppError.field('file', 'VAL-24', { 'size limit': maxMb });
-  if (bytes.length === 0 || !opensCleanly(bytes, detected.type)) throw AppError.field('file', 'VAL-26');
+  if (bytes.length > maxMb * 1024 * 1024) throw AppError.field('file', 'VAL-24', { ...rule, 'file size': (bytes.length / 1024 / 1024).toFixed(1) });
+  if (bytes.length === 0 || !opensCleanly(bytes, detected.type)) throw AppError.field('file', 'VAL-26', rule);
 
   const rec = new StoredFile({
     accountId: ownerKey, uploadedBy: ctx.userId, purpose, type: detected.type, mime: detected.mime, size: bytes.length,

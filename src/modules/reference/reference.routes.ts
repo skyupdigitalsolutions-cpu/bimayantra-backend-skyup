@@ -3,6 +3,8 @@ import { cfgList, cfgNum, cfgRange } from '../../config/cfg.js';
 import { INDIAN_STATES } from '../../lib/fields.js';
 import { LEAD_SOURCE_CODES, LEAD_SOURCES, isSourceCode } from '../../lib/leadSources.js';
 import { sendData } from '../../lib/response.js';
+import { FILE_PURPOSES } from '../files/file.model.js';
+import { fileRule } from '../files/files.service.js';
 import { CONTACT_OUTCOMES, OUTCOME_LABEL, PRIORITIES } from '../leads/lead.model.js';
 import { LEAD_STATUSES, STATUS_LABEL } from '../leads/leadStatus.js';
 import { DEACTIVATION_REASONS, GENDERS, HOW_GIVEN, PREFERRED_CONTACTS } from '../customers/customer.model.js';
@@ -20,6 +22,8 @@ export function referenceRoutes() {
     /** Every code with its label, including retired and import-only ones, for filters and showing old leads. */
     allLeadSources: LEAD_SOURCE_CODES.map((c) => ({ code: c, label: LEAD_SOURCES[c].label, retired: 'legacy' in LEAD_SOURCES[c] })),
     lostReasons: cfgList('CFG-33'),
+    /** Formats and size limit per kind of upload, so screens can say them before the upload (client change, Nov 2026). */
+    fileRules: Object.fromEntries(FILE_PURPOSES.map((p) => [p, fileRule(p)])),
     relationships: cfgList('CFG-36'),
     insuranceTypes: cfgList('CFG-115'),
     // P-18: all document types (CFG-171); which need Verify and which come from the vehicle screen (P-54)
