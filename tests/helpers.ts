@@ -44,7 +44,10 @@ export async function resetState() {
   clock.setOffset(0);
   await ConfigValue.create({ _id: 'CFG-10', value: 100000 });
   await loadConfigOverrides();
-  await loadFlags(); // collections were emptied: every feature switch is back to its default
+  // The suites written before consent requests record consent as the advisor (the old path). consent-requests.int.test.ts
+  // turns the switch back on (its default) to cover the new rule.
+  await (await import('../src/modules/flags/flags.js')).GlobalFlag.create({ _id: 'consent_customer_confirms', enabled: false, reason: 'test: advisor-recorded consent', updatedBy: 'test' });
+  await loadFlags(); // collections were emptied: every feature switch is back to its default (except the one above)
   await (await import('../src/modules/campaigns/platformApps.js')).loadPlatformApps(); // no ad-platform apps saved
 }
 

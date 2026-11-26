@@ -5,13 +5,14 @@ import {
 } from '../../lib/fields.js';
 import { pageQuery } from '../../lib/pagination.js';
 import { CONSENT_CHANNELS, DEACTIVATION_REASONS, GENDERS, HOW_GIVEN, PREFERRED_CONTACTS, WITHDRAW_REASONS } from './customer.model.js';
+import { REQUEST_VIA } from './consentRequest.model.js';
 
 export const labels = {
   name: 'Full name', mobile: 'Primary mobile', altMobile: 'Alternate mobile', email: 'Email', dob: 'Date of birth', gender: 'Gender',
   preferredContact: 'Preferred contact', addressLine1: 'Address line 1', addressLine2: 'Address line 2', city: 'City', state: 'State',
   pin: 'PIN code', anniversary: 'Wedding anniversary', occupation: 'Occupation', notes: 'Notes', reason: 'Reason', note: 'Note',
   relationship: 'Relationship', pan: 'PAN', aadhaar: 'Aadhaar number', howGiven: 'How it was given', declaration: 'Declaration',
-  personType: 'Person', nominee: 'Nominee', linkedCustomerId: 'Policy holder', appointeeName: 'Appointee name', appointeeDob: 'Appointee date of birth', personId: 'Person', channel: 'Channel', action: 'Action', field: 'Field', version: 'Version', customerId: 'Customer',
+  personType: 'Person', nominee: 'Nominee', linkedCustomerId: 'Policy holder', appointeeName: 'Appointee name', appointeeDob: 'Appointee date of birth', personId: 'Person', channel: 'Channel', action: 'Action', field: 'Field', version: 'Version', customerId: 'Customer', channels: 'Consent', via: 'Send by', agree: 'Answer',
 };
 
 /** P-15 optional fields, also used by the lead conversion form (P-14 step 3). */
@@ -60,6 +61,22 @@ export const consentBody = z.object({
   withdrawNote: z.string().trim().max(500).nullish(),
   acknowledgedEffects: z.boolean().optional(),
 }).refine((b) => !!b.channel !== !!b.channels, { message: 'GEN-01', path: ['channel'] });
+
+/** Consent request: the person confirms it themselves from a link sent by email, WhatsApp or Telegram. */
+export const consentRequestBody = z.object({
+  personType: required(enumOf(['CUSTOMER', 'FAMILY'] as const)),
+  personId: required(z.string().regex(/^(cus|fam)_[a-f0-9]{28}$/, 'VAL-22')),
+  channels: z.array(enumOf(CONSENT_CHANNELS)).min(1, 'GEN-01').max(4),
+  via: required(enumOf(REQUEST_VIA)),
+}).strict();
+export const consentRequestParams = z.object({ id: z.string().regex(/^cus_[a-f0-9]{28}$/), requestId: z.string().regex(/^crq_[a-f0-9]{28}$/) });
+/** The person's answer on /consent/:token: agree with the ticked channels (and the declaration), or say no. */
+export const consentAnswerBody = z.object({
+  agree: z.boolean({ required_error: 'GEN-01', invalid_type_error: 'VAL-22' }),
+  channels: z.array(enumOf(CONSENT_CHANNELS)).max(4).optional(),
+  declaration: z.boolean().optional(),
+}).strict();
+export const consentTokenParam = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{40,60}$/) });
 
 export const customerIdParam = z.object({ id: z.string().regex(/^cus_[a-f0-9]{28}$/) });
 export const memberParams = z.object({ id: z.string().regex(/^cus_[a-f0-9]{28}$/), memberId: z.string().regex(/^fam_[a-f0-9]{28}$/) });

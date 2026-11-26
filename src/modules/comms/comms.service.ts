@@ -138,6 +138,7 @@ export const VARIABLES: Record<string, string[]> = {
   QUOTATION_EMAIL: ['customer name', 'quotation number', 'link', 'advisor name', 'advisor mobile'],
   BIRTHDAY: ['name', 'advisor name'], FAMILY_BIRTHDAY: ['customer name', 'member name', 'advisor name'], ANNIVERSARY: ['name', 'advisor name'],
   KYC_RESULT: ['advisor name', 'result'], SUBSCRIPTION: ['advisor name', 'plan', 'date'],
+  CONSENT_REQUEST: ['name', 'advisor name', 'advisor mobile', 'link', 'consents', 'valid until'],
 };
 const SYSTEM: Array<{ code: string; name: string; channel: Channel; purpose: string; subject?: string; body: string }> = [
   { code: 'LEAD-WELCOME', name: 'New lead welcome (WhatsApp)', channel: 'WHATSAPP', purpose: 'LEAD_WELCOME', body: 'Hi {name}, thank you for your interest. I am {advisor name}, your insurance advisor, and I will contact you shortly. For anything urgent, call me on {advisor mobile}.' },
@@ -150,6 +151,7 @@ const SYSTEM: Array<{ code: string; name: string; channel: Channel; purpose: str
   { code: 'BDAY', name: 'Birthday greeting', channel: 'WHATSAPP', purpose: 'BIRTHDAY', body: 'Happy birthday, {name}! Wishing you good health and happiness. – {advisor name}' },
   { code: 'FAM-BDAY', name: 'Family birthday greeting', channel: 'WHATSAPP', purpose: 'FAMILY_BIRTHDAY', body: 'Dear {customer name}, wishing {member name} a very happy birthday! – {advisor name}' },
   { code: 'SUB-EMAIL', name: 'Subscription invoice email', channel: 'EMAIL', purpose: 'SUBSCRIPTION', subject: 'Your Bimayantra {plan} plan', body: 'Hello {advisor name}, payment received. Your {plan} plan is active until {date}. Your GST invoice is in Settings, My plan, Billing history.' },
+  { code: 'CONSENT-REQ', name: 'Consent request (email)', channel: 'EMAIL', purpose: 'CONSENT_REQUEST', subject: '{advisor name} asks for your consent', body: 'Dear {name},\n\n{advisor name}, your insurance advisor, asks for your consent to {consents}.\n\nPlease open this link to agree or say no: {link}\n\nThe link works until {valid until}. If you did not expect this email, you can ignore it.\n\nFor any questions, call {advisor name} on {advisor mobile}.\n\nRegards,\n{advisor name}' },
   { code: 'ANNIV', name: 'Anniversary greeting', channel: 'WHATSAPP', purpose: 'ANNIVERSARY', body: 'Happy anniversary, {name}! Wishing you many happy years together. – {advisor name}' },
 ];
 let seeded = false;
@@ -232,6 +234,12 @@ export async function skipFor(m: OutboxDoc): Promise<string | null> {
     const { skipReason } = await import('../renewals/renewals.service.js');
     const c = await RenewalCycle.findById(related.cycleId).lean();
     return c ? skipReason(c as never, m.channel as Channel) : 'Renewal removed';
+  }
+  const consentReq = related as { consentRequestId?: string } | null;
+  if (consentReq?.consentRequestId) { // a consent request: only while it is still open; it asks for consent, so none is needed yet
+    const { consentRequestClosed } = await import('../customers/consentRequest.service.js');
+    if (await consentRequestClosed(consentReq.consentRequestId)) return 'Consent request closed';
+    return (await consentOf(m.accountId, m.personKey ?? null, 'EMAIL')) === 'WITHDRAWN' ? 'Consent withdrawn' : null;
   }
   const leadRef = related as { leadId?: string; followUpAt?: string } | null;
   if (leadRef?.leadId) { // New lead welcome / follow-up: the lead must still be open (and the follow-up not moved)

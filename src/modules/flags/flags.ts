@@ -49,6 +49,12 @@ export const FLAGS = {
     scope: 'ACCOUNT', default: false, defaultPlans: ['PREMIUM'], ref: 'Change #1 (client request: LinkedIn Lead Gen Forms)',
     description: 'LinkedIn Lead Gen Forms can be connected and their leads imported (needs LinkedIn Lead Sync API access).',
   },
+  consent_customer_confirms: {
+    // client request (Nov 2026): consent is confirmed by the customer from a link sent by email, WhatsApp or Telegram.
+    // Off = the old path: the advisor may also record consent themselves (signed form, verbal…). Withdrawal is never blocked.
+    scope: 'ACCOUNT', default: true, ref: 'Consent requests (Nov 2026, provisional Q-CR1)',
+    description: 'Consent is given only by the customer confirming a consent request; advisors can no longer record it themselves.',
+  },
 } as const satisfies Record<string, FlagDef>;
 
 export type FlagKey = keyof typeof FLAGS;

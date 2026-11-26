@@ -131,6 +131,12 @@ export type ConsentChannel = (typeof CONSENT_CHANNELS)[number];
 export const HOW_GIVEN = ['Told me in person or by phone', 'Signed form', 'Replied on WhatsApp', 'Ticked on referral form', 'Verbal on a call', 'Reply on WhatsApp or email'] as const;
 /** Written only by imports (Campaigns): a consent question in the form, ticked yes. */
 export const IMPORT_HOW_GIVEN = ['Website form tick', 'Ad form tick'] as const;
+/** Written only when the customer confirms a consent request (consentRequest.service.ts), by how the link reached them. */
+export const CUSTOMER_HOW_GIVEN = {
+  EMAIL: 'Confirmed by the customer (email link)',
+  WHATSAPP: 'Confirmed by the customer (WhatsApp link)',
+  TELEGRAM: 'Confirmed by the customer (Telegram link)',
+} as const;
 export const WITHDRAW_REASONS = ['ASKED_TO_STOP', 'REPLIED_STOP', 'OTHER'] as const;
 
 /**
@@ -142,7 +148,7 @@ const consentChangeSchema = new Schema(
   {
     from: { type: String, default: null }, to: { type: String, required: true }, address: { type: String, default: null },
     howGiven: { type: String, default: null }, note: { type: String, default: null },
-    source: { type: String, enum: ['USER', 'SYSTEM', 'LEAD_CONVERSION'], required: true },
+    source: { type: String, enum: ['USER', 'SYSTEM', 'LEAD_CONVERSION', 'CUSTOMER'], required: true }, // CUSTOMER: confirmed from a consent request link
     by: { type: String, default: null }, at: { type: Date, required: true },
   },
   { _id: false },

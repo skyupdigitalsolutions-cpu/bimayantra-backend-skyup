@@ -136,6 +136,10 @@ const DEFS = {
   'CFG-194': { label: 'Website form submissions per IP address per hour', unit: 'count', value: 30, change: 'ADM', range: [1, 1000] },
   'CFG-195': { label: 'Follow-up task for a new ad or form lead is due after', unit: 'minutes', value: 60, change: 'ADM', range: [5, 1440] },
   'CFG-196': { label: 'An old connection key keeps working after rotation for', unit: 'days', value: 7, change: 'ADM', range: [0, 30] },
+  // Consent requests (the customer confirms consent from a link sent by email, WhatsApp or Telegram)
+  'CFG-197': { label: 'A consent request link stays valid for', unit: 'days', value: 7, change: 'ADM', range: [1, 30] },
+  'CFG-198': { label: 'Consent requests per person per day', unit: 'count', value: 5, change: 'ADM', range: [1, 50] },
+  'CFG-199': { label: 'Consent link answers per IP address per hour', unit: 'count', value: 30, change: 'ADM', range: [1, 1000] },
   'CFG-38': { label: 'OCR job time limit', unit: 'minutes', value: 5, change: 'ADM', range: [1, 30] },
   'CFG-110': { label: 'Longest web address', unit: 'characters', value: 2048, change: 'Release' },
   'CFG-111': { label: 'Code length', unit: 'characters', value: { min: 2, max: 20 }, change: 'Release' },

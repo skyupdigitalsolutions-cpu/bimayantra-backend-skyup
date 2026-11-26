@@ -9,8 +9,11 @@ import { validate } from '../../middleware/validate.js';
 import { sendData, sendDone } from '../../lib/response.js';
 import { AppError } from '../../lib/errors.js';
 import { getConsents, recordConsent, recordConsents } from './consent.service.js';
+import { cancelConsentRequest, createConsentRequest, listConsentRequests, publicConsentView, respondConsent } from './consentRequest.service.js';
+import { flagOn } from '../flags/flags.js';
+import type { AuthContext } from '../rbac/capabilities.js';
 import {
-  consentBody, createCustomerBody, customerIdParam, defaultNomineeBody, linkBody, linkParams, duplicateQuery, familyBody, familyUpdateBody, identityBody, labels, listCustomersQuery,
+  consentAnswerBody, consentBody, consentRequestBody, consentRequestParams, consentTokenParam, createCustomerBody, customerIdParam, defaultNomineeBody, linkBody, linkParams, duplicateQuery, familyBody, familyUpdateBody, identityBody, labels, listCustomersQuery,
   memberParams, revealBody, statusBody, updateCustomerBody, versionBody,
 } from './customers.schemas.js';
 import * as svc from './customers.service.js';
@@ -91,11 +94,44 @@ export function customerRoutes() {
   });
 
   // P-17 Consent (withdrawal stays possible in read-only mode: a withdrawal always wins)
-  r.get('/:id/consents', validate({ params: customerIdParam }), async (req, res) => sendData(res, await getConsents(req.auth!, p(req).id)));
+  r.get('/:id/consents', validate({ params: customerIdParam }), async (req, res) => sendData(res, await consentsView(req.auth!, p(req).id)));
   r.post('/:id/consents', validate({ params: customerIdParam, body: consentBody }, labels), idempotent(), async (req, res) => {
     if (req.body.action === 'GIVE' && req.auth!.readOnly) throw new AppError(403, 'READ_ONLY', 'SUB-03');
+    // Consent requests: with the switch on, consent is given only by the person confirming a request (CU-50).
+    if (req.body.action === 'GIVE' && flagOn('consent_customer_confirms', req.auth!.accountId)) throw new AppError(409, 'CONSENT_REQUIRED', 'CU-50');
     const out = req.body.channels ? await recordConsents(req.auth!, p(req).id, req.body, req) : await recordConsent(req.auth!, p(req).id, req.body, req);
-    sendDone(res, await getConsents(req.auth!, p(req).id), out.messageId, out.params);
+    sendDone(res, await consentsView(req.auth!, p(req).id), out.messageId, out.params);
+  });
+
+  // Consent requests: the person confirms from a link sent by email, WhatsApp or Telegram
+  r.post('/:id/consent-requests', writable, validate({ params: customerIdParam, body: consentRequestBody }, labels), idempotent(), async (req, res) => {
+    const { messageId, params, ...out } = await createConsentRequest(req.auth!, p(req).id, req.body, req);
+    sendDone(res, { ...out, consents: await consentsView(req.auth!, p(req).id) }, messageId, params, 201);
+  });
+  r.post('/:id/consent-requests/:requestId/cancel', validate({ params: consentRequestParams }), async (req, res) => {
+    await cancelConsentRequest(req.auth!, p(req).id, String(req.params.requestId), req);
+    sendDone(res, await consentsView(req.auth!, p(req).id), 'CU-43');
+  });
+  return r;
+}
+
+/** The consent grid, history and recent consent requests in one response (consent tab). */
+async function consentsView(ctx: AuthContext, customerId: string) {
+  const grid = await getConsents(ctx, customerId);
+  return { ...grid, requests: await listConsentRequests(ctx, customerId), customerConfirms: flagOn('consent_customer_confirms', ctx.accountId) };
+}
+
+/** The person's consent page: no sign-in, hidden from search engines. GET shows the request; POST answers it once. */
+export function publicConsentRoutes() {
+  const r = Router();
+  r.get('/:token', validate({ params: consentTokenParam }), async (req, res) => {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    sendData(res, await publicConsentView(String(req.params.token)));
+  });
+  r.post('/:token', validate({ params: consentTokenParam, body: consentAnswerBody }, labels), async (req, res) => {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    const out = await respondConsent(String(req.params.token), req.body, req);
+    sendDone(res, out.data, out.messageId, out.params);
   });
   return r;
 }

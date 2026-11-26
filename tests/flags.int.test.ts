@@ -27,6 +27,7 @@ describe('reading switches', () => {
     expect(r.body.data).toEqual({
       quotation_accept_requires_payment: false, payment_skips_auto_accept: false,
       campaigns_website: true, campaigns_google: true, campaigns_meta: false, campaigns_linkedin: false,
+      consent_customer_confirms: false, // on by default; resetState() turns it off for the suites that record consent as the advisor
     });
     expect((await request(app).get('/v1/flags')).status).toBe(401);
   });

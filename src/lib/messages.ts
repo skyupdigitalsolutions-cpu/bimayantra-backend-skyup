@@ -143,6 +143,20 @@ export const MESSAGES = {
   'CU-36': 'The link between {Customer} and {Name} was removed.',
   'CU-37': 'A policy holder cannot be linked to themselves.',
   'CU-38': '{Name} is already linked to {Customer}.',
+  // Consent confirmed by the customer from a link (email, WhatsApp or Telegram)
+  'CU-39': 'Consent request emailed to {email}. Consent is recorded when {name} confirms it.',
+  'CU-40': 'Consent request ready. Send it to {name} on {via}; consent is recorded when they confirm it.',
+  'CU-41': '{name} has withdrawn email consent, so the request cannot be emailed. Send it on WhatsApp or Telegram.',
+  'CU-42': '{name} has already given consent for {channels}.',
+  'CU-43': 'Consent request cancelled. Its link no longer works.',
+  'CU-44': 'This consent link is no longer valid. Please contact {advisor name} on {advisor mobile} for a new one.',
+  'CU-45': 'You have already answered this request. Thank you.',
+  'CU-46': '{name} confirmed consent: {channels}.',
+  'CU-47': '{name} did not agree to the consent request.',
+  'CU-48': 'Thank you, {name}. Your consent has been recorded.',
+  'CU-49': 'Thank you. Nothing has been recorded, and {advisor name} has been told.',
+  'CU-50': 'Consent must be confirmed by the customer. Send a consent request by email, WhatsApp or Telegram.',
+  'CU-51': 'Up to {CFG-198} consent requests can be sent to {name} in a day. Please try again tomorrow.',
 
   // ── Feature switches [NOT IN BPD YET: add to Section 21] (Backend Change Analysis §5.3, §9.1) ──
   'FLG-01': 'Feature switch saved. It applies from now on.',

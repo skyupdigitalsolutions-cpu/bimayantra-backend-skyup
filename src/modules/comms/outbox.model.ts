@@ -7,7 +7,7 @@ import { newId } from '../../lib/ids.js';
  * unique rule, so a repeated job does nothing (GR-28). Status only moves forward: QUEUED → SENT → DELIVERED → READ, or
  * SKIPPED / FAILED / CANCELLED with a reason; SENT with no update after CFG-71 becomes STATUS_UNKNOWN.
  */
-export const PURPOSES = ['LEAD_WELCOME', 'FOLLOW_UP', 'RENEWAL_REMINDER', 'QUOTATION_EMAIL', 'BIRTHDAY', 'FAMILY_BIRTHDAY', 'ANNIVERSARY', 'KYC_RESULT', 'SUBSCRIPTION'] as const;
+export const PURPOSES = ['LEAD_WELCOME', 'FOLLOW_UP', 'RENEWAL_REMINDER', 'QUOTATION_EMAIL', 'BIRTHDAY', 'FAMILY_BIRTHDAY', 'ANNIVERSARY', 'KYC_RESULT', 'SUBSCRIPTION', 'CONSENT_REQUEST'] as const;
 const outboxSchema = new Schema(
   {
     _id: { type: String, default: () => newId('msg') },
@@ -30,7 +30,7 @@ const outboxSchema = new Schema(
     sentAt: { type: Date, default: null }, statusAt: { type: Date, default: null },
     history: { type: [new Schema({ at: Date, status: String, note: { type: String, default: null } }, { _id: false })], default: [] },
     resendOf: { type: String, default: null }, resends: { type: Number, default: 0 },
-    related: { type: Schema.Types.Mixed, default: null }, // { cycleId, policyId } or { quotationId, revision }
+    related: { type: Schema.Types.Mixed, default: null }, // { cycleId, policyId }, { quotationId, revision } or { consentRequestId }
     day: { type: String, required: true }, // IST date it was queued (daily limits)
   },
   { timestamps: true, versionKey: false, minimize: false },

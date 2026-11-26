@@ -12,7 +12,7 @@ import { healthRoutes } from './modules/health/health.routes.js';
 import { referenceRoutes } from './modules/reference/reference.routes.js';
 import { assistantRoutes, staffRoutes } from './modules/team/team.routes.js';
 import { leadRoutes, pipelineRoutes } from './modules/leads/leads.routes.js';
-import { customerRoutes } from './modules/customers/customers.routes.js';
+import { customerRoutes, publicConsentRoutes } from './modules/customers/customers.routes.js';
 import { auditRoutes } from './modules/audit/audit.routes.js';
 import { profileRoutes } from './modules/profile/profile.routes.js';
 import { fileRoutes } from './modules/files/files.routes.js';
@@ -134,6 +134,7 @@ export function createApp() {
   api.use('/campaigns', campaignRoutes());
   api.use('/hooks', hookRoutes());
   api.use('/public/forms', publicFormRoutes());
+  api.use('/public/consent', publicConsentRoutes()); // the person confirms consent from an email, WhatsApp or Telegram link
   api.use('/billing', billingRoutes());
   api.use('/exports', exportRoutes());
   api.use('/support-grants', supportGrantRoutes());
@@ -161,4 +162,4 @@ export function createApp() {
   app.use(notFound);
   app.use(errorHandler);
   return app;
-}
+} 
