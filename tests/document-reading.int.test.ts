@@ -12,7 +12,7 @@ vi.mock('../src/modules/documents/reader.js', () => ({
     await new Promise((r) => setTimeout(r, 50));
     if (behaviour === 'fail') throw new Error('Document AI unavailable');
     if (behaviour === 'hang') return new Promise(() => undefined);
-    return { text: 'Alpha General Insurance', values: type === 'PAN' ? { pan: 'ABCPE1234F', name: 'Meena Iyer', dob: '15-04-1988' } : { policyNumber: 'P-100' } };
+    return { text: 'Alpha General Insurance', values: type === 'PAN' ? { pan: 'ABCPE1234F', name: 'Meena Iyer', dob: '15-04-1988' } : type === 'Aadhaar' ? { address: 'S/O Ravi Iyer, Jayanagar, Bengaluru - 560011' } : { policyNumber: 'P-100' } };
   },
 }));
 
@@ -47,6 +47,20 @@ async function setup() {
   };
   return { adv, c, cus, up, until };
 }
+
+describe('Aadhaar back side (Nov 2026: the address is on the back of the card)', () => {
+  it('the back photo is read on the check screen: the address comes back to fill in, and the file is kept on the document', async () => {
+    const { adv, c, up, until } = await setup();
+    const d = (await up('Aadhaar')).body.data;
+    await until(d.id);
+    const back = (await request(h.app).post('/v1/files?purpose=CUSTOMER_DOCUMENT').set('Authorization', `Bearer ${adv.token}`).set('Content-Type', 'application/octet-stream').send(PNG)).body.data.id;
+    const r = await c.post(`/documents/${d.id}/back`, { fileId: back });
+    expect(r.body.data).toMatchObject({ values: { address: 'S/O Ravi Iyer, Jayanagar, Bengaluru - 560011' }, messageId: 'DOC-15' });
+    expect((await CustomerDocument.findById(d.id).lean())!.backFileId).toBe(back);
+    behaviour = 'fail';
+    expect((await c.post(`/documents/${d.id}/back`, { fileId: back })).body.data.messageId).toBe('DOC-13');
+  });
+});
 
 describe('P-18 background reading (GR-26)', () => {
   it('the upload returns at once with reading in progress; the values arrive afterwards with DOC-04', async () => {

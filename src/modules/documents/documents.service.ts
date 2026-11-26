@@ -230,6 +230,33 @@ export async function confirm(ctx: AuthContext, id: string, b: { rev: number; va
   };
 }
 
+// ── Aadhaar back side (Nov 2026) ──
+
+/**
+ * The address is printed on the BACK of an Aadhaar card, which is often a separate photo. Read that photo and return
+ * the address (and the number when the front did not give it), for the check screen to fill in. The back file is
+ * kept on the document so it can be opened later; nothing else changes before Confirm.
+ */
+export async function readAadhaarBack(ctx: AuthContext, id: string, fileId: string, req: Request) {
+  const d = await CustomerDocument.findOne({ _id: id, accountId: ctx.accountId }).lean<DocumentDoc>();
+  if (!d) throw AppError.notFound();
+  if (d.type !== 'Aadhaar' || d.status !== 'UNCONFIRMED') throw AppError.invalidState('document', d.status);
+  await assertOwnFile(ctx, fileId, 'CUSTOMER_DOCUMENT', 'fileId');
+  await CustomerDocument.updateOne({ _id: id, accountId: ctx.accountId }, { $set: { backFileId: fileId } });
+  if (!readerEnabled()) return { values: {}, messageId: 'DOC-14' as MessageId, message: msg('DOC-14') };
+  try {
+    const { file, bytes } = await openFile(ctx, fileId, req);
+    const timeout = new Promise<never>((_, fail) => setTimeout(() => fail(new Error('OCR time limit (CFG-38) reached')), cfgNum('CFG-38') * 60_000).unref());
+    const read = await Promise.race([readDocument('Aadhaar', bytes, file.mime), timeout]);
+    const v = read?.values ?? {};
+    const values = { ...(v.address ? { address: v.address } : {}), ...(v.aadhaar ? { aadhaar: v.aadhaar } : {}) };
+    return { values, messageId: (values.address ? 'DOC-15' : 'DOC-16') as MessageId, message: msg(values.address ? 'DOC-15' : 'DOC-16') };
+  } catch (e) {
+    logger.warn({ documentId: id, reason: (e as Error).message }, 'Aadhaar back side reading failed');
+    return { values: {}, messageId: 'DOC-13' as MessageId, message: msg('DOC-13') };
+  }
+}
+
 // ── Labels (P-18 step 8) ──────────────────────────────────────────────────────
 
 export async function changeLabel(ctx: AuthContext, id: string, b: { rev: number; label: string }, req: Request) {
@@ -267,7 +294,8 @@ export function readMessage(type: string, state: string, values: Record<string, 
   const want = EXPECTED[type] ?? [];
   const has = (k: string) => values?.[k] !== undefined && values?.[k] !== null && values?.[k] !== '';
   const missing = want.filter(([k]) => !has(k));
-  const label = ([k, l]: [string, string]) => (k === 'aadhaar' && values?.aadhaarMasked ? 'Aadhaar number (it is masked on this copy)' : l);
+  const label = ([k, l]: [string, string]) => (k === 'aadhaar' && values?.aadhaarMasked ? 'Aadhaar number (it is masked on this copy)'
+    : k === 'address' && type === 'Aadhaar' ? 'address (it is on the back of the card: add the back side below)' : l);
   const out = (messageId: MessageId, params: Record<string, string> = {}) => ({ messageId, message: msg(messageId, params), missing: missing.map(([k]) => k) });
   if (state === 'OFF') return out('DOC-14');
   if (state === 'FAILED') return out('DOC-13');

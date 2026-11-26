@@ -118,6 +118,14 @@ const schema = z.object({
   DOCUMENT_AI_PROCESSOR_ID: z.preprocess(blankIsUnset, z.string().regex(/^[a-z0-9]+$/).optional()),
   /** Path to the service-account key file. Without it, Google's standard GOOGLE_APPLICATION_CREDENTIALS is used. */
   DOCUMENT_AI_KEY_FILE: z.string().optional(),
+  /** Brochure reading with an AI model (Nov 2026), after OCR. On when OPENAI_API_KEY is set; BROCHURE_AI=none turns it
+   *  off. Only brochures (public insurer documents) are sent, never customer documents. */
+  OPENAI_API_KEY: z.preprocess(blankIsUnset, z.string().min(20).optional()),
+  OPENAI_MODEL: z.string().default('gpt-4o-mini'),
+  BROCHURE_AI: z.enum(['none', 'openai']).default('openai'),
+  /** Brochure text sent at most (characters; about 4 per token). */
+  BROCHURE_AI_MAX_CHARS: z.coerce.number().int().min(10_000).max(400_000).default(120_000),
+  BROCHURE_AI_TIMEOUT_SECONDS: z.coerce.number().int().min(10).max(300).default(90),
   CLOUDINARY_CLOUD_NAME: z.string().optional(),
   CLOUDINARY_API_KEY: z.string().optional(),
   CLOUDINARY_API_SECRET: z.string().optional(),

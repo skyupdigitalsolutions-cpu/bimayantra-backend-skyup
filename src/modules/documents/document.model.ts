@@ -23,6 +23,7 @@ const documentSchema = new Schema(
     seriesKey: { type: String, required: true },
     version: { type: Number, required: true },
     fileId: { type: String, required: true },
+    backFileId: { type: String, default: null }, // Aadhaar: the back of the card (address), when added on the check screen (Nov 2026)
     originalName: { type: String, required: true }, // the upload's file name, kept forever
     label: { type: String, required: true },
     labelKey: { type: String, required: true }, // lowercased, for DOC-06

@@ -57,7 +57,7 @@ describe('document reading (Nov 2026 fixes)', () => {
   });
   it('the check screen says what was read and what to type', () => {
     expect(readMessage('Aadhaar', 'DONE', { name: 'A', dob: '1990-01-01', aadhaarMasked: 'true' })).toMatchObject({
-      messageId: 'DOC-12', message: 'Read from the document: name and date of birth. Aadhaar number (it is masked on this copy), gender and address could not be read: type them in, then select Confirm.',
+      messageId: 'DOC-12', message: 'Read from the document: name and date of birth. Aadhaar number (it is masked on this copy), gender and address (it is on the back of the card: add the back side below) could not be read: type them in, then select Confirm.',
       missing: ['aadhaar', 'gender', 'address'],
     });
     expect(readMessage('PAN', 'DONE', {}).messageId).toBe('DOC-10');
@@ -78,5 +78,26 @@ describe('policy document reading (Nov 2026)', () => {
     });
     expect(policyReadMessage(null, true).messageId).toBe('POL-23');
     expect(policyReadMessage({}).messageId).toBe('POL-22');
+  });
+});
+
+describe('Aadhaar address (client report, Nov 2026: "should be updated in" was read as the address)', () => {
+  it('a card note about updating the address is not the address; the front of a card has none', () => {
+    const front = `Government of India
+Shashikant S Bilgundi
+DOB: 07/09/2003
+MALE
+8726 6599 4196
+Aadhaar is proof of identity, not of citizenship.
+Your address should be updated in
+Aadhaar every 10 years`;
+    const v = parseAadhaar(front);
+    expect(v.address).toBeUndefined();
+    expect(v.dob).toBe('2003-09-07');
+  });
+  it('the back side without its label (OCR lost it) is read from the S/O line', () => {
+    expect(parseAadhaar(`S/O Shivaraj Bilgundi, Ward No 4,
+Station Road, Kalaburagi,
+Karnataka - 585101`).address).toBe('S/O Shivaraj Bilgundi, Ward No 4, Station Road, Kalaburagi, Karnataka - 585101');
   });
 });

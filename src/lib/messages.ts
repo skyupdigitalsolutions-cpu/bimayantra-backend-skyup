@@ -364,6 +364,8 @@ export const MESSAGES = {
   'DOC-12': 'Read from the document: {found}. {missing} could not be read: type them in, then select Confirm.',
   'DOC-13': 'Reading this document did not work this time. Type the details yourself, then select Confirm, or upload a clearer copy.',
   'DOC-14': 'Automatic reading is switched off. Type the details yourself, then select Confirm.',
+  'DOC-15': 'Address read from the back side. Check it, then select Confirm.',
+  'DOC-16': 'No address could be read from this image. Check that it is the back of the Aadhaar card and that it is clear, or type the address yourself.',
   'CU-17': 'Upload only a masked Aadhaar copy, with the first 8 digits hidden. Do not upload full Aadhaar numbers.',
   'VEH-01': 'Vehicle {registration} added for {customer}.',
   'VEH-02': 'Add at least {CFG-154} photos before saving.',

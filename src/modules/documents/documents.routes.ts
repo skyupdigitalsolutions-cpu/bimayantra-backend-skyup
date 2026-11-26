@@ -42,6 +42,8 @@ export function documentRoutes() {
     sendData(res, out.items, 200, out.meta);
   });
   r.get('/:id', validate({ params: idParam }), async (req, res) => sendData(res, await svc.getDocument(req.auth!, String(req.params.id))));
+  r.post('/:id/back', writable, validate({ params: idParam, body: z.object({ fileId: required(recordId('fil')) }).strict() }, { fileId: 'Back side' }), async (req, res) =>
+    sendData(res, await svc.readAadhaarBack(req.auth!, String(req.params.id), String(req.body.fileId), req)));
   r.post('/:id/confirm', writable, validate({ params: idParam, body: z.object({ rev: required(version()), values: z.record(z.unknown()) }).strict() }, labels), idempotent(),
     async (req, res) => sendData(res, await svc.confirm(req.auth!, String(req.params.id), req.body, req)));
   r.patch('/:id/label', allow('documents.relabel'), writable, validate({ params: idParam, body: z.object({ rev: required(version()), label: required(documentLabel()) }).strict() }, labels),

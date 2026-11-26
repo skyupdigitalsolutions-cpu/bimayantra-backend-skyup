@@ -101,17 +101,22 @@ export function parseAadhaar(text: string): Parsed {
  * the line with the 6-digit PIN code. Hindi lines, the Aadhaar number, VID and help lines are left out.
  */
 function aadhaarAddress(ls: string[]): string | null {
-  const start = ls.findIndex((l) => /\baddress\b/i.test(l));
+  // Only a label starts the address: "Address:" / "Address" on its own / "पता:". Card notes such as "address should be
+  // updated in Aadhaar" (on the front of newer cards) are not the address (client report, Nov 2026). Without a label
+  // (OCR lost it), the "S/O / D/O / W/O / C/O" line of the back side starts it.
+  const NOTE = /updat|should|keep|proof|valid|helps|establish|change|online|download/i;
+  let start = ls.findIndex((l) => (/^\W*(address|पता)\b\s*[:\-]?/i.test(l) || /\baddress\s*:/i.test(l)) && !NOTE.test(l));
+  if (start < 0) start = ls.findIndex((l) => /^\W*(S|D|W|C)\s?\/\s?O\b/i.test(l) && /[A-Za-z]{3,}/.test(l));
   if (start < 0) return null;
   const parts: string[] = [];
-  const first = ls[start]!.replace(/^.*?\baddress\b\s*[:\-]?\s*/i, '');
+  const first = ls[start]!.replace(/^.*?\b(address|पता)\b\s*[:\-]?\s*/i, '');
   const take = (l: string) => {
     const clean = l.replace(/[^A-Za-z0-9,./()\-#&' ]/g, ' ').replace(/\s+/g, ' ').trim().replace(/^[,.\-\s]+|[,\s]+$/g, '');
     if (clean && /[A-Za-z0-9]{2,}/.test(clean)) parts.push(clean);
   };
   if (first) take(first);
   for (const l of ls.slice(start + 1, start + 10)) {
-    if (/\d{4}\s?\d{4}\s?\d{4}|\bVID\b|help|www\.|uidai|1947|enrol/i.test(l)) break;
+    if (/\d{4}\s?\d{4}\s?\d{4}|\bVID\b|help|www\.|uidai|1947|enrol/i.test(l) || NOTE.test(l)) break;
     if (!/[A-Za-z0-9]/.test(l)) continue;
     take(l);
     if (/\b\d{6}\b/.test(l) || /\b\d{3}\s\d{3}\b/.test(l)) break; // the PIN code ends the address

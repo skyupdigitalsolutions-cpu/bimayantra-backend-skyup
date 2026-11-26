@@ -147,8 +147,12 @@ export function matchFeatures(features: Feature[], pages: Page[]) {
         const exact = low.includes(name);
         const set = exact ? 0 : wordSets.findIndex((ws) => ws.length > 0 && ws.every((w) => w.test(low)));
         if (!exact && set < 0) return;
-        const after = exact ? low.slice(low.indexOf(name) + name.length) : low;
-        let value = extract(f.dataType, after.replace(/^[\s:–-]+/, ''), f.name) ?? extract(f.dataType, normed[i + 1] ?? '', f.name) ?? extract(f.dataType, normed[i + 2] ?? '', f.name);
+        // Values come from the line as printed (normalised text is only for finding the feature: it is lower case).
+        const orig = lines[i]!;
+        const at = orig.toLowerCase().indexOf(f.name.toLowerCase());
+        const sep = orig.search(/[:–]/);
+        const after = at >= 0 ? orig.slice(at + f.name.length) : exact && sep >= 0 ? orig.slice(sep + 1) : orig;
+        let value = extract(f.dataType, after.replace(/^[\s:–-]+/, ''), f.name) ?? extract(f.dataType, lines[i + 1] ?? '', f.name) ?? extract(f.dataType, lines[i + 2] ?? '', f.name);
         let factor = exact ? 1 : set === 0 ? 0.8 : 0.7;
         // A Yes/No feature named in the brochure with no word either way is offered (it is listed as a benefit),
         // unless the line is about exclusions. Lower confidence, so it is easy to spot and change.
@@ -259,6 +263,17 @@ function run(jobId: string, templateId: string, bytes: Buffer, mime: string, ctx
       const form = productForm(job?.form);
       let rows = matchFeatures(tpl?.features ?? [], read.pages);
       let extra = { details: [...readDetails(read.pages, form), ...readFormDetails(form, read.pages)], variants: readVariantNames(read.pages), suggestions: suggestFeatures(read.pages, tpl?.features ?? []), detected };
+      // Nov 2026: the AI model reads the same text with the feature list; its values replace the pattern matches.
+      const ai = await import('./brochureAi.js');
+      if (ai.brochureAiEnabled()) {
+        const fields = [...ai.PRODUCT_FIELDS, ...form.fields.map((f) => ({ key: `details.${f.key}`, label: f.label, hint: f.options?.length ? `one of: ${f.options.join(' | ')}` : undefined }))];
+        const got = await ai.aiExtract(read.pages, (tpl?.features ?? []).map((f) => ({ key: f.key, name: f.name, dataType: f.dataType })), fields, jobId);
+        if (got) {
+          const merged = ai.mergeAi(rows as never, { details: extra.details as never, variants: extra.variants as never, suggestions: extra.suggestions as never }, got, Object.fromEntries(fields.map((f) => [f.key, f.label])));
+          rows = merged.rows as unknown as typeof rows;
+          extra = { ...extra, details: merged.details as never, variants: merged.variants as never, suggestions: merged.suggestions as never };
+        }
+      }
       // Advisor readings: every value found is accepted at once (client requirement); the advisor checks and changes
       // them in the form. Values not found stay open. SkyUp's verified readings keep the review (P-23).
       if (job?.kind === 'ADVISOR') {
@@ -394,12 +409,27 @@ export function rupeesIn(text: string): number[] {
   return [...new Set(out)];
 }
 
+/** A launch date written YYYY-MM-DD or DD/MM/YYYY (also DD-MM-YYYY, DD.MM.YYYY), as YYYY-MM-DD; else null. */
+export function launchDateOf(v: string): string | null {
+  const iso = /\b(20\d{2})-(\d{2})-(\d{2})\b/.exec(v);
+  const dmy = iso ? null : /\b(\d{1,2})\s*[/.-]\s*(\d{1,2})\s*[/.-]\s*(20\d{2})\b/.exec(v);
+  const [y, m, d] = iso ? [iso[1], iso[2], iso[3]] : dmy ? [dmy[3], dmy[2]!.padStart(2, '0'), dmy[1]!.padStart(2, '0')] : [];
+  if (!y || Number(m) < 1 || Number(m) > 12 || Number(d) < 1 || Number(d) > 31) return null;
+  return `${y}-${m}-${d}`;
+}
+
 /** Product details on the brochure. Each value is a suggestion with the page and a confidence; nothing is trusted. */
 export function readDetails(pages: Page[], form?: ProductForm): Row[] {
   const rows: Row[] = [];
   const first = <T>(fn: (line: string, pg: Page) => T | null) => { for (const pg of pages) for (const line of pg.text.split(/\r?\n/)) { const v = fn(line, pg); if (v !== null) return { v, pg }; } return null; };
   const uin = first((l) => /\b([A-Z]{3,8}[A-Z0-9]{2,}V\d{5,8})\b/.exec(l.toUpperCase())?.[1] ?? /\b(IRDAI\/[A-Z]+\/\d+\/[A-Z\d]+)\b/.exec(l.toUpperCase())?.[1] ?? null);
   if (uin) rows.push(mk('uin', 'IRDAI product UIN', uin.v, uin.pg.confidence, uin.pg.number));
+  // Nov 2026: the launch date, when the brochure prints one ("launched on", "effective from", "w.e.f.")
+  for (const pg of pages) {
+    const m = /(?:launch(?:ed)?(?:\s+(?:on|date))?|effective\s+(?:from|date)|w\.?\s?e\.?\s?f\.?)\s*[:\-]?\s*(\d{1,2}\s*[/.-]\s*\d{1,2}\s*[/.-]\s*20\d{2})/i.exec(pg.text);
+    const iso = m ? launchDateOf(m[1]!) : null;
+    if (iso) { rows.push(mk('launchDate', 'Launch date', iso, pg.confidence * 0.8, pg.number)); break; }
+  }
   const name = first((l) => { const t = l.trim(); return t.length >= 4 && t.length <= 80 && /\b(plan|policy|insurance|shield|care|health|cover|protect|secure|assure|guard|raksha|suraksha|kavach|jeevan|bima)\b/i.test(t) && !/[:₹%]|\d{4,}/.test(t) ? t.replace(/\s+/g, ' ') : null; });
   if (name) rows.push(mk('name', 'Product name', name.v, name.pg.confidence * 0.6, name.pg.number)); // a guess from a heading: always checked
   const si = (() => {
@@ -498,6 +528,8 @@ export function decidedResult(j: Pick<JobDoc, 'rows' | 'details' | 'variants' | 
     else if (r.key === 'adultMin' || r.key === 'adultMax') { const n = nums(v)[0]; if (n !== undefined) data[r.key] = n; }
     else if (r.key === 'policyTerms') data.policyTerms = nums(v).filter((n) => Number.isInteger(n));
     else if (r.key === 'sumInsuredOptions') data.sumInsured = { options: rupeesIn(v).length ? rupeesIn(v) : nums(v.replace(/,/g, '')) };
+    else if (r.key === 'launchDate') { const iso = launchDateOf(v); if (iso) data.launchDate = iso; } // Nov 2026: read from the brochure
+    else if (r.key === 'gracePeriodDays') { const n = nums(v)[0]; if (n !== undefined && Number.isInteger(n)) data.gracePeriodDays = n; }
     else if (r.key?.startsWith('details.')) { // category details (productForms.ts), typed for their field
       const f = form.fields.find((x) => `details.${x.key}` === r.key);
       const typed = f ? detailValue(f, v) : undefined;
