@@ -1,8 +1,8 @@
 /**
  * MSG91 (SMS_PROVIDER=msg91, WHATSAPP_PROVIDER=msg91). One auth key (header "authkey") for both.
  *
- * SMS (TRAI DLT): the OTP goes through MSG91's OTP API with our own code (we still create, hash and check it), so it
- * rides MSG91's priority OTP route. Other SMS (the mobile-change notice) use a Flow / SMS template with named variables.
+ * SMS (TRAI DLT): the OTP goes through MSG91's SMS (Flow) API with our own code (we still create, hash and check it).
+ * Other SMS (the mobile-change notice) use a Flow / SMS template with named variables.
  *
  * WhatsApp: business-initiated messages must use templates approved by Meta.
  *   - Our template body "Hi {name}, … {advisor name}" is sent to MSG91 as "Hi {{1}}, … {{2}}" (variables in order of
@@ -10,15 +10,28 @@
  *   - Sending fills body_1 … body_n from the message's parameters in the same order.
  *
  * Failures: 4xx (except 429) and MSG91 "error"/"hasError" answers are permanent (no retry); 429, 5xx and network errors
- * are temporary (the outbox retries).
+ * are temporary (the outbox retries). Both error classes now carry `detail` — the path, HTTP status, round-trip time
+ * and the first 1000 characters of MSG91's raw body — so a refused send can be read straight out of the logs instead
+ * of being flattened into "MSG91 400".
  */
 import { env } from '../config/env.js';
+import { logger } from './logger.js';
 
 const BASE = 'https://control.msg91.com/api/v5';
 
-export class Msg91Temporary extends Error {}
+/** What MSG91 actually said, attached to every thrown error. */
+export interface Msg91Detail {
+  path: string;
+  status: number | null;
+  ms: number;
+  body: string;
+}
+
+export class Msg91Temporary extends Error {
+  constructor(message: string, readonly detail?: Msg91Detail) { super(message); }
+}
 export class Msg91Permanent extends Error {
-  constructor(message: string, readonly status = 400) { super(message); }
+  constructor(message: string, readonly status = 400, readonly detail?: Msg91Detail) { super(message); }
 }
 
 /**
@@ -27,7 +40,15 @@ export class Msg91Permanent extends Error {
  */
 export interface Msg91Creds { authKey: string; number: string; namespace?: string | null }
 
+/** MSG91 puts the reason in different keys and sometimes as an object; render whichever is there. */
+const describe = (v: unknown): string => {
+  if (v === undefined || v === null) return '';
+  if (typeof v === 'string') return v;
+  try { return JSON.stringify(v); } catch { return String(v); }
+};
+
 async function call<T = Record<string, unknown>>(method: 'GET' | 'POST', path: string, body?: unknown, authKey?: string): Promise<T> {
+  const started = Date.now();
   let res: Response;
   try {
     res = await fetch(`${BASE}${path}`, {
@@ -36,12 +57,22 @@ async function call<T = Record<string, unknown>>(method: 'GET' | 'POST', path: s
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch (e) {
-    throw new Msg91Temporary(`MSG91 unreachable: ${(e as Error).message}`);
+    throw new Msg91Temporary(`MSG91 unreachable: ${(e as Error).message}`, { path, status: null, ms: Date.now() - started, body: '' });
   }
-  const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  const why = String(json.message ?? json.errors ?? json.error ?? `MSG91 ${res.status}`);
-  if (res.status === 429 || res.status >= 500) throw new Msg91Temporary(why);
-  if (!res.ok || json.type === 'error' || json.hasError === true || json.status === 'fail') throw new Msg91Permanent(why, res.ok ? 400 : res.status);
+
+  // Read as text first: a non-JSON answer (an HTML error page, an empty body) is then still visible in the log.
+  const raw = await res.text().catch(() => '');
+  let json: Record<string, unknown> = {};
+  if (raw) { try { json = JSON.parse(raw) as Record<string, unknown>; } catch { /* keep the raw text in `detail` */ } }
+
+  const detail: Msg91Detail = { path, status: res.status, ms: Date.now() - started, body: raw.slice(0, 1000) };
+  logger.debug({ msg91: detail }, 'MSG91 response');
+
+  const why = describe(json.message ?? json.errors ?? json.error) || `MSG91 ${res.status}`;
+  if (res.status === 429 || res.status >= 500) throw new Msg91Temporary(why, detail);
+  if (!res.ok || json.type === 'error' || json.hasError === true || json.status === 'fail') {
+    throw new Msg91Permanent(why, res.ok ? 400 : res.status, detail);
+  }
   return json as T;
 }
 
@@ -54,29 +85,42 @@ export const msisdn = (mobile: string) => {
 /* ───────────────────────── SMS ───────────────────────── */
 
 /**
- * OTP through the SMS (Flow) API with the DLT-verified SMS template MSG91_OTP_TEMPLATE_ID (MSG91 → SMS → Templates),
- * whose text has the variables ##otp## and ##name##, for example
- * "Dear ##name##, your OTP for Skyup login is ##otp##. Valid for 10 min…". We still create, hash and check the code.
- * (MSG91's separate OTP API only accepts templates made in its OTP section; it answers "success" for an SMS template ID
- * and then drops the message without any log, which is how codes silently went missing.)
+ * OTP through the SMS (Flow) API with the DLT-verified SMS template MSG91_OTP_TEMPLATE_ID.
+ *
+ * IMPORTANT: this must be a template from MSG91 → SMS → Templates, NOT one from MSG91's OTP section. The /flow
+ * endpoint refuses OTP-section template IDs. (MSG91's separate OTP API has the mirror-image problem: it answers
+ * "success" for an SMS template ID and then drops the message without any log, which is how codes silently went
+ * missing.) The template text carries the variables ##otp## and ##name##, for example
+ * "Dear ##name##, your OTP for Skyup login is ##otp##. Valid for 10 min…".
+ *
+ * Variable names are case-sensitive and must match the template exactly: a template written with ##OTP## needs the
+ * recipient key `OTP`, not `otp`. MSG91_OTP_VAR_OTP / MSG91_OTP_VAR_NAME override the keys without a code change.
+ *
  * realTimeResponse=1: MSG91 answers with the real outcome, so a bad template or DLT problem is an error here (AUTH-13)
- * instead of a "sent" screen with no SMS. Variable names are case-sensitive and must match the template.
+ * instead of a "sent" screen with no SMS. It also means the request can take ten seconds or more — the caller's
+ * timeout must allow for that.
  */
 export async function sendOtp(mobile: string, code: string, name: string) {
-  const r = await call<{ request_id?: string; message?: string }>('POST', '/flow', {
+  const otpKey = env.MSG91_OTP_VAR_OTP ?? 'otp';
+  const nameKey = env.MSG91_OTP_VAR_NAME ?? 'name';
+  const r = await call<{ request_id?: string; message?: unknown }>('POST', '/flow', {
     template_id: env.MSG91_OTP_TEMPLATE_ID ?? '',
     short_url: '0',
     realTimeResponse: '1',
-    // DLT variables are short (30 characters is the common limit): a long name must not get the SMS rejected.
-    recipients: [{ mobiles: msisdn(mobile), otp: code, name: (name.trim() || 'User').slice(0, 30) }],
+    recipients: [{
+      mobiles: msisdn(mobile),
+      // DLT variables are short (30 characters is the common limit): a long name must not get the SMS rejected.
+      [otpKey]: code,
+      [nameKey]: (name.trim() || 'User').slice(0, 30),
+    }],
   });
-  return { id: String(r.request_id ?? r.message ?? '') };
+  return { id: String(r.request_id ?? describe(r.message) ?? '') };
 }
 
 /** Any other DLT SMS through a Flow / SMS template; `vars` are the template's variable names and values. */
 export async function sendFlowSms(templateId: string, mobile: string, vars: Record<string, string>) {
-  const r = await call<{ message?: string }>('POST', '/flow', { template_id: templateId, short_url: '0', recipients: [{ mobiles: msisdn(mobile), ...vars }] });
-  return { id: String(r.message ?? '') };
+  const r = await call<{ message?: unknown }>('POST', '/flow', { template_id: templateId, short_url: '0', recipients: [{ mobiles: msisdn(mobile), ...vars }] });
+  return { id: describe(r.message) };
 }
 
 /* ───────────────────────── WhatsApp ───────────────────────── */
@@ -230,6 +274,21 @@ export async function checkOwnAccount(creds: Msg91Creds): Promise<{ ok: true; te
     const m = (e as Msg91Permanent).message ?? '';
     const keyProblem = (e as Msg91Permanent).status === 401 || (e as Msg91Permanent).status === 403 || /auth|unauthori[sz]ed|invalid.*key|authkey/i.test(m);
     return { ok: false, reason: keyProblem ? 'KEY' : 'NUMBER', detail: m };
+  }
+}
+
+/**
+ * Quick self-test for the SMS path: posts the OTP template to one number and returns MSG91's own words either way.
+ * Used by the dev/diagnostics route so a misconfigured template can be found without reading the API logs.
+ */
+export async function probeOtpTemplate(mobile: string): Promise<{ ok: true; id: string; ms: number } | { ok: false; kind: 'TEMPORARY' | 'PERMANENT'; message: string; detail?: Msg91Detail }> {
+  const started = Date.now();
+  try {
+    const { id } = await sendOtp(mobile, '123456', 'Test');
+    return { ok: true, id, ms: Date.now() - started };
+  } catch (e) {
+    const temporary = e instanceof Msg91Temporary;
+    return { ok: false, kind: temporary ? 'TEMPORARY' : 'PERMANENT', message: (e as Error).message, detail: (e as Msg91Temporary | Msg91Permanent).detail };
   }
 }
 

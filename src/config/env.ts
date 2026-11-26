@@ -8,6 +8,9 @@ const csv = z
 
 const bool = z.enum(['true', 'false']).transform((v) => v === 'true');
 
+/** An empty value in .env means "not set" (z.coerce.number() would otherwise turn "" into 0, and undefined into NaN). */
+const blankIsUnset = (v: unknown) => (v === '' || v === undefined ? undefined : v);
+
 /** A 32-byte key given as base64 (generate with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"). */
 const key32 = z
   .string()
@@ -51,13 +54,24 @@ const schema = z.object({
   // confirmed provider (Section 1.2) and needs its DLT template and credentials.
   SMS_PROVIDER: z.enum(['dev', 'msg91']).default('dev'),
   MSG91_AUTH_KEY: z.string().optional(),
+  /** The SMS (Flow) template id from MSG91 → SMS → Templates. A template id from MSG91's OTP section is refused
+   *  by the /flow endpoint the OTP send uses, which shows up as AUTH-13 with no SMS. */
   MSG91_OTP_TEMPLATE_ID: z.string().optional(),
+  /** Variable names in the DLT OTP template, which are case-sensitive and must match it exactly. Default to the
+   *  lowercase "otp" / "name" of ##otp## and ##name##; set these when the approved template uses other spellings
+   *  (##OTP##, ##VAR1##, ##customer_name## …) so no code change is needed. */
+  MSG91_OTP_VAR_OTP: z.preprocess(blankIsUnset, z.string().optional()),
+  MSG91_OTP_VAR_NAME: z.preprocess(blankIsUnset, z.string().optional()),
   /** Optional DLT SMS template (variables masked_mobile, support) for the "your login number changed" notice. */
   MSG91_MOBILE_CHANGED_TEMPLATE_ID: z.string().optional(),
   /** WhatsApp (WHATSAPP_PROVIDER=msg91): SkyUp's integrated number with country code, e.g. 919876543210. */
   MSG91_WA_NUMBER: z.string().optional(),
   /** Secret path part for MSG91's webhook: POST /v1/webhooks/msg91/<MSG91_WEBHOOK_TOKEN>. */
   MSG91_WEBHOOK_TOKEN: z.string().min(24).optional(),
+  /** How long the OTP send waits for the SMS provider before giving up with AUTH-13 (default 20000 ms).
+   *  MSG91's /flow call is made with realTimeResponse=1, so it holds the connection until the operator answers,
+   *  which on Indian DLT routes regularly takes 6-15 seconds. Anything under ~15000 will reject good sends. */
+  SMS_TIMEOUT_MS: z.preprocess(blankIsUnset, z.coerce.number().int().min(1000).max(60_000).optional()),
 
   // Communications (Section 15). 'dev' keeps messages in a test inbox and simulates provider callbacks (non-production
   // only). Real providers plug in behind the same interface. Webhooks are signed with WEBHOOK_SECRET (HMAC-SHA256).
@@ -101,7 +115,7 @@ const schema = z.object({
   DOCUMENT_AI_PROJECT_ID: z.string().optional(),
   DOCUMENT_AI_LOCATION: z.string().regex(/^[a-z0-9-]+$/).default('asia-south1'),
   // Empty in .env (as shipped in .env.example) means "not set".
-  DOCUMENT_AI_PROCESSOR_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().regex(/^[a-z0-9]+$/).optional()),
+  DOCUMENT_AI_PROCESSOR_ID: z.preprocess(blankIsUnset, z.string().regex(/^[a-z0-9]+$/).optional()),
   /** Path to the service-account key file. Without it, Google's standard GOOGLE_APPLICATION_CREDENTIALS is used. */
   DOCUMENT_AI_KEY_FILE: z.string().optional(),
   CLOUDINARY_CLOUD_NAME: z.string().optional(),
