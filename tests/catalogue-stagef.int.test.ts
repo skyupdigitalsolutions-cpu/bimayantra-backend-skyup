@@ -208,7 +208,9 @@ describe('#6 brochure reading for advisors', () => {
     expect(await Product.countDocuments()).toBe(0); // nothing saved yet
     const result = (await w.A.post(`/my-products/brochure-reading/${job.id}/result`)).body.data;
     expect(result.data).toMatchObject({ name: 'CareFirst Family', uin: 'CAREHLIP26001V012526', adultMin: 18, adultMax: 65, policyTerms: [1, 2, 3], sumInsured: { options: [500000, 1000000, 2500000] },
-      features: { room_rent: { value: 5000, page: 2 }, co_pay: { notStated: true }, cf_air_ambulance_cover: { value: true } }, customFeatures: [{ key: 'cf_air_ambulance_cover', name: 'Air Ambulance Cover', origin: 'AI_SUGGESTED', dataType: 'Yes/No' }] });
+      features: { room_rent: { value: 5000, page: 2 }, co_pay: { notStated: true }, cf_air_ambulance_cover: { value: true }, cf_domiciliary_treatment: { value: false } },
+      // client change (Nov 2026): features read from the brochure come in without a tick, suggestions included
+      customFeatures: [{ key: 'cf_air_ambulance_cover', name: 'Air Ambulance Cover', origin: 'AI_SUGGESTED', dataType: 'Yes/No' }, { key: 'cf_domiciliary_treatment', name: 'Domiciliary Treatment', origin: 'AI_SUGGESTED', dataType: 'Yes/No' }] });
     expect(result.variants).toEqual([{ name: 'Silver' }, { name: 'Gold' }]);
     // the advisor completes the form and publishes with the job: the version records what was read and checked
     const made = await w.A.post('/my-products', { insurerId: w.insurerId, typeId: w.typeId, code: 'CF-1', ocrJobId: job.id, data: { ...result.data, launchDate: '01-01-2026', pricingMode: 'MANUAL_ENTRY', taxPercent: 18 }, variants: result.variants });

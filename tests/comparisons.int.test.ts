@@ -31,7 +31,7 @@ async function world() {
   await A.post('/my-insurers', { insurerId: b._id, agentCode: 'AG-BETA', declaration: true });
   const base = { uin: 'UIN1', launchDate: '01-01-2026', adultMin: 18, adultMax: 75, coversChildren: true, childMin: 0, childMax: 25, sumInsured: { options: [500000] }, policyTerms: [1], taxPercent: 18, pricingMode: 'RATE_TABLE' };
   const mk = async (insurerId: string, code: string, data: object, prem: number[]) => {
-    const pr = (await A.post('/my-products', { insurerId, typeId: type._id, code: code.toUpperCase().replace(/\s+/g, '-'), data: { ...base, name: code, ...data } })).body.data;
+    const pr = (await A.post('/my-products', { insurerId, typeId: type._id, code: code.toUpperCase().replace(/\s+/g, '-'), data: { ...base, uin: `UIN${code.toUpperCase().replace(/[^A-Z0-9]/g, '')}`, name: code, ...data } })).body.data;
     await A.post(`/products/${pr.id}/prices`, { effectiveFrom: day(0), taxPercent: 18, rows: [{ factors: { age: '0-35' }, basePremium: prem[0] }, { factors: { age: '36-75' }, basePremium: prem[1] }] });
     return pr.id as string;
   };

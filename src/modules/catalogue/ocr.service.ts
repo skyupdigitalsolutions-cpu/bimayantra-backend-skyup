@@ -478,13 +478,19 @@ export function readDetails(pages: Page[], form?: ProductForm): Row[] {
   return rows;
 }
 
-const TIERS = ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Titanium', 'Basic', 'Essential', 'Classic', 'Plus', 'Premier', 'Elite', 'Supreme', 'Advantage', 'Value', 'Optima', 'Signature', 'Standard', 'Superior', 'Exclusive', 'Max', 'Pro', 'Lite', 'Ultra', 'Infinity', 'Prime', 'Royal', 'Super', 'Advanced', 'Comprehensive', 'Floater', 'Individual', 'Family'];
+const TIERS = ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Titanium', 'Basic', 'Essential', 'Classic', 'Plus', 'Premier', 'Elite', 'Supreme', 'Advantage', 'Value', 'Optima', 'Signature', 'Standard', 'Superior', 'Exclusive', 'Max', 'Pro', 'Lite', 'Ultra', 'Infinity', 'Prime', 'Royal', 'Super', 'Advanced'];
+// Nov 2026: 'Family', 'Individual', 'Floater' and 'Comprehensive' are cover types, not plan names: "CareFirst Family
+// Health Plan" gave a "Family" variant. A tier word now counts only on a line about plans / variants / options, or in
+// a list with another tier word, and never from the product's own name (the first heading or the UIN line).
 /** Variant names: plan tiers ("Silver", "Gold") or lettered plans ("Plan A") in lines about plans or variants. */
 export function readVariantNames(pages: Page[]): Row[] {
   const found: Row[] = [];
+  const heading = (pages[0]?.text.split(/\r?\n/).find((l) => l.trim()) ?? '').toLowerCase();
   for (const pg of pages) for (const line of pg.text.split(/\r?\n/)) {
-    const ctx = /\b(plans?|variants?|options?|tiers?)\b/i.test(line);
-    for (const t of TIERS) if (new RegExp(`\\b${t}\\b`, 'i').test(line) && !found.some((f) => f.key === t.toLowerCase())) found.push(mk(t.toLowerCase(), t, t, pg.confidence * (ctx ? 0.9 : 0.6), pg.number));
+    const ctx = /\b(plans?|variants?|options?|tiers?|available as|available in)\b/i.test(line);
+    const here = TIERS.filter((t) => new RegExp(`\\b${t}\\b`, 'i').test(line) && !new RegExp(`\\b${t}\\b`, 'i').test(heading));
+    if (/\buin\b/i.test(line) || line.trim().toLowerCase() === heading || (!ctx && here.length < 2)) continue;
+    for (const t of here) if (!found.some((f) => f.key === t.toLowerCase())) found.push(mk(t.toLowerCase(), t, t, pg.confidence * (ctx ? 0.9 : 0.7), pg.number));
     for (const m of line.matchAll(/\b(?:plan|variant|option)\s+([A-E1-5])\b/gi)) {
       const label = `Plan ${m[1]!.toUpperCase()}`;
       if (!found.some((f) => f.key === label.toLowerCase())) found.push(mk(label.toLowerCase(), label, label, pg.confidence * 0.85, pg.number));
@@ -597,9 +603,10 @@ export async function advisorResult(ctx: AuthContext, jobId: string) {
   // is accepted and pre-filled into the form. The advisor checks by editing the form fields directly.
   // Suggestions (non-template features) are also auto-accepted so they appear as add-on features.
   const auto = { ...j,
-    rows: j.rows.map((r) => (r.found && !r.decision ? { ...r, decision: 'ACCEPT' as const } : !r.found && !r.decision ? { ...r, decision: 'NOT_STATED' as const } : r)),
-    details: (j.details ?? []).map((r) => (!r.decision ? { ...r, decision: r.value ? 'ACCEPT' as const : 'NOT_STATED' as const } : r)),
-    variants: (j.variants ?? []).map((r) => (!r.decision ? { ...r, decision: r.value ? 'ACCEPT' as const : 'NOT_STATED' as const } : r)),
+    // Nov 2026 fix: a feature the brochure does not mention is left to type (listed in `left`), not marked "Not stated".
+    rows: j.rows.map((r) => (r.found && !r.decision ? { ...r, decision: 'ACCEPT' as const } : r)),
+    details: (j.details ?? []).map((r) => (!r.decision && r.value ? { ...r, decision: 'ACCEPT' as const } : r)),
+    variants: (j.variants ?? []).map((r) => (!r.decision && r.value ? { ...r, decision: 'ACCEPT' as const } : r)),
     suggestions: (j.suggestions ?? []).map((r) => (!r.decision && r.value ? { ...r, decision: 'ACCEPT' as const } : r)),
   };
   const out = decidedResult(auto as unknown as JobDoc);

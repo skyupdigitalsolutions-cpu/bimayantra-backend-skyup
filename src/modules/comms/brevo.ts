@@ -67,14 +67,21 @@ export function brevoEvent(b: Record<string, unknown>) {
  * Check an advisor's Brevo key and sender before saving them: the key must open the account, and the sender must be an
  * active sender there (or on a domain authenticated there).
  */
-export async function checkBrevo(apiKey: string, fromEmail: string): Promise<{ ok: true; account: string | null } | { ok: false; reason: 'KEY' | 'SENDER' | 'UNREACHABLE'; detail: string }> {
+export async function checkBrevo(apiKey: string, fromEmail: string): Promise<{ ok: true; account: string | null } | { ok: false; reason: 'KEY' | 'IP' | 'SENDER' | 'UNREACHABLE'; detail: string }> {
   const get = async (path: string) => {
     const res = await fetch(`https://api.brevo.com/v3${path}`, { headers: { 'api-key': apiKey, Accept: 'application/json' } });
     return { status: res.status, json: (await res.json().catch(() => ({}))) as Record<string, unknown> };
   };
   try {
     const acc = await get('/account');
-    if (acc.status === 401 || acc.status === 403) return { ok: false, reason: 'KEY', detail: String(acc.json.message ?? 'Unauthorized') };
+    if (acc.status === 401 || acc.status === 403) {
+      // Nov 2026: Brevo blocks API calls from IP addresses not on the account's authorised list (on by default for
+      // new accounts) and answers 401, which looked like a wrong key. Its message names the blocked address.
+      const message = String(acc.json.message ?? 'Unauthorized');
+      const ip = /(\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,7})/i.exec(message)?.[1];
+      if (/unrecogni[sz]ed ip|authori[sz]ed[_ ]ips|ip address/i.test(message)) return { ok: false, reason: 'IP', detail: ip ?? 'this server' };
+      return { ok: false, reason: 'KEY', detail: message };
+    }
     if (acc.status === 429 || acc.status >= 500) return { ok: false, reason: 'UNREACHABLE', detail: `Brevo ${acc.status}` };
     if (acc.status >= 400) return { ok: false, reason: 'KEY', detail: String(acc.json.message ?? `Brevo ${acc.status}`) };
     const email = fromEmail.trim().toLowerCase();

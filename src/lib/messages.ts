@@ -227,6 +227,8 @@ export const MESSAGES = {
   'INT-07': '{provider} checked: the connection works.',
   'INT-08': 'Enter the WhatsApp number with country code and no +, for example 919876543210.',
   'INT-09': '{provider} is not connected.',
+  'INT-10': 'Brevo blocked Bimayantra\'s server ({ip}) because it is not on your authorised IP list. In Brevo go to your name (top right) → Security → Authorised IPs, add {ip} (or deactivate IP blocking), then press Connect again.',
+  'INT-11': '{provider} did not accept this key. {provider} said: "{reason}". Copy the key again from your {provider} account (SMTP & API → API keys) and paste it here.',
   'MR-01': 'Message template for {trigger} saved.',
   'MR-02': 'Connect your MSG91 account in Settings → Integrations to use your own WhatsApp templates.',
   'MR-03': 'Choose what fills each of the {count} blanks in this template.',
@@ -341,6 +343,8 @@ export const MESSAGES = {
   'CAT-50': '{name} is already in your list.',
   'CAT-51': 'Each feature of your own needs a different name.',
   'CAT-52': '{name} is already a SkyUp category. Choose it from the list instead of creating your own.',
+  'CAT-53': 'A product with UIN {uin} is already in your list ({product}). Open it and edit it instead of adding it again.',
+  'CAT-54': '{name} from this company is already in your list. Open it and edit it, or give this product a different name.',
   // ── Stage G: quotations [NOT IN BPD YET: add to Section 21] (changes #2, #8 to #16) ──
   'QT-45': 'Record the payment before marking this quotation accepted.',
   'QT-46': '{variant} covers a sum insured from {min} to {max}.',

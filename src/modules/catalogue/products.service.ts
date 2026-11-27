@@ -461,17 +461,17 @@ export async function ownCreate(ctx: AuthContext, b: { insurerId: string; typeId
   b.data = await prepareData(b.typeId, b.data); // category details checked and stamped
   await publishCheck('OWN', b.insurerId, b.typeId, tpl._id, b.data, undefined, b.variants ?? []);
   // Duplicate check: same UIN or same name+insurer in this account should not be created twice
+  // Nov 2026 fix: these used CAT-50 / CAT-51 (other messages), so the advisor saw "{name} is already in your list."
   if (b.data.uin) {
-    const dupUin = await Product.findOne({ accountId: ctx.accountId, kind: 'OWN', status: { $ne: 'WITHDRAWN' } }).then(async () => {
-      const versions = await ProductVersion.find({ status: 'PUBLISHED', 'data.uin': b.data.uin }).lean<Array<{ productId: any }>>();
-      const productIds = versions.map((v) => v.productId);
-      return Product.findOne({ _id: { $in: productIds }, accountId: ctx.accountId, kind: 'OWN', status: { $ne: 'WITHDRAWN' } }).lean();
-    });
-    if (dupUin) throw new AppError(409, 'DUPLICATE', 'CAT-50', { field: 'UIN', value: b.data.uin, existingProduct: dupUin.name ?? dupUin.code });
+    const mine = await Product.find({ accountId: ctx.accountId, kind: 'OWN', status: { $ne: 'WITHDRAWN' } }, { _id: 1, name: 1, code: 1, publishedVersionId: 1 }).lean<Array<{ _id: string; name?: string | null; code: string; publishedVersionId?: string | null }>>();
+    const vids = mine.map((p) => p.publishedVersionId).filter(Boolean) as string[];
+    const hit = vids.length ? await ProductVersion.findOne({ _id: { $in: vids }, 'data.uin': b.data.uin }, { productId: 1 }).lean<{ productId: string }>() : null;
+    const dupUin = hit ? mine.find((p) => p._id === hit.productId) : undefined;
+    if (dupUin) throw AppError.field('data.uin', 'CAT-53', { uin: String(b.data.uin), product: dupUin.name ?? dupUin.code });
   }
   if (b.data.name) {
-    const dupName = await Product.findOne({ accountId: ctx.accountId, kind: 'OWN', insurerId: b.insurerId, name: b.data.name, status: { $ne: 'WITHDRAWN' } }).lean();
-    if (dupName) throw new AppError(409, 'DUPLICATE', 'CAT-51', { field: 'Product name', value: b.data.name, existingProduct: dupName.code });
+    const dupName = await Product.findOne({ accountId: ctx.accountId, kind: 'OWN', insurerId: b.insurerId, name: b.data.name, status: { $ne: 'WITHDRAWN' } }, { code: 1 }).lean<{ code: string }>();
+    if (dupName) throw AppError.field('data.name', 'CAT-54', { name: String(b.data.name) });
   }
   const marks = b.ocrJobId ? await ocrMarksFor(ctx, b.ocrJobId, b.typeId) : {};
   if (b.data.brochureFileId) await assertOwnFile(ctx, b.data.brochureFileId, 'BROCHURE', 'brochureFileId');

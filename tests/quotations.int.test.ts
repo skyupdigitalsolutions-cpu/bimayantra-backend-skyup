@@ -48,7 +48,7 @@ async function world() {
     addOns: [{ name: 'OPD cover', priceType: 'PERCENT', value: 10 }, { name: 'Room upgrade', priceType: 'FIXED', value: 1200 }] };
   const prod = (await A.post('/my-products', { insurerId: ins._id, typeId: type._id, code: 'FS', data: { ...data, pricingMode: 'RATE_TABLE' } })).body.data;
   await A.post(`/products/${prod.id}/prices`, { effectiveFrom: day(0), taxPercent: 18, rows: [{ factors: { age: '18-35' }, basePremium: 12000 }, { factors: { age: '36-65' }, basePremium: 21000.5 }] });
-  const manual = (await A.post('/my-products', { insurerId: ins._id, typeId: type._id, code: 'MAN', data: { ...data, name: 'Manual Plan', pricingMode: 'MANUAL_ENTRY' } })).body.data;
+  const manual = (await A.post('/my-products', { insurerId: ins._id, typeId: type._id, code: 'MAN', data: { ...data, name: 'Manual Plan', uin: 'UIN0002', pricingMode: 'MANUAL_ENTRY' } })).body.data;
   const cus = (await A.post('/customers', { name: 'Meena Iyer', mobile: newMobile(), dob: `15-04-${year - 40}` })).body.data;
   const son = (await A.post(`/customers/${cus.id}/family`, { name: 'Arjun Iyer', relationship: 'Son', dob: `10-06-${year - 9}` })).body.data;
   const grandpa = (await A.post(`/customers/${cus.id}/family`, { name: 'Ravi Iyer', relationship: 'Father', dob: `01-01-${year - 70}` })).body.data;

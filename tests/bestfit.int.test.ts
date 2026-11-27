@@ -31,7 +31,7 @@ async function world() {
   const cus = (await A.post('/customers', { name: 'Meena Iyer', mobile: newMobile(), dob: `15-04-${year - 45}` })).body.data;
   const son = (await A.post(`/customers/${cus.id}/family`, { name: 'Arjun Iyer', relationship: 'Son', dob: `10-06-${year - 9}` })).body.data;
   const base = { uin: 'UIN0001', launchDate: '01-01-2026', adultMin: 18, adultMax: 65, coversChildren: true, childMin: 0, childMax: 25, sumInsured: { options: [500000] }, policyTerms: [1], taxPercent: 18 };
-  const own = async (code: string, insurerId: string, data: object) => (await A.post('/my-products', { insurerId, typeId: type._id, code, data: { ...base, name: code, ...data } })).body.data as { id: string };
+  const own = async (code: string, insurerId: string, data: object) => (await A.post('/my-products', { insurerId, typeId: type._id, code, data: { ...base, uin: `UIN${code}`, name: code, ...data } })).body.data as { id: string };
   const strong = await own('STRONG', a._id, { pricingMode: 'RATE_TABLE', features: { room_rent: { value: 'No limit' }, co_pay: { value: 0 }, ped_wait: { value: 24 }, csr: { value: 98 } } });
   await A.post(`/products/${strong.id}/prices`, { effectiveFrom: new Date(Date.now() + 5.5 * 3_600_000).toISOString().slice(0, 10).split('-').reverse().join('-'), taxPercent: 18,
     rows: [{ factors: { age: '18-35' }, basePremium: 10000 }, { factors: { age: '36-65' }, basePremium: 20000 }] });
@@ -42,6 +42,17 @@ async function world() {
   const noPrice = await own('NOPRICE', a._id, { pricingMode: 'RATE_TABLE', features: {} });
   return { adv, A, cus, son, typeId: type._id as string, ids: { strong: strong.id, weak: weak.id, partial: partial.id, noCode: noCode.id, upcoming: upcoming.id, noPrice: noPrice.id } };
 }
+describe('own products: one per UIN and name (Nov 2026: the duplicate check said "{name} is already in your list.")', () => {
+  it('a second product with the same UIN, or the same name from the same company, is refused with a clear message', async () => {
+    const w = await world();
+    const p = (await w.A.get(`/products/${w.ids.strong}`)).body.data;
+    const again = (data: object) => w.A.post('/my-products', { insurerId: p.insurerId, typeId: w.typeId, code: 'AGAIN', data: { uin: 'UINSTRONG', launchDate: '01-01-2026', adultMin: 18, adultMax: 65, sumInsured: { options: [500000] }, policyTerms: [1], taxPercent: 18, pricingMode: 'MANUAL_ENTRY', name: 'Another', features: {}, ...data } });
+    expect((await again({})).body.error.fields[0]).toMatchObject({ field: 'data.uin', messageId: 'CAT-53', message: 'A product with UIN UINSTRONG is already in your list (STRONG). Open it and edit it instead of adding it again.' });
+    expect((await again({ uin: 'UINNEW', name: 'STRONG' })).body.error.fields[0]).toMatchObject({ field: 'data.name', messageId: 'CAT-54', message: 'STRONG from this company is already in your list. Open it and edit it, or give this product a different name.' });
+    expect((await again({ uin: 'UINNEW', name: 'Fresh Plan' })).status).toBe(201);
+  });
+});
+
 const ask = (w: Awaited<ReturnType<typeof world>>, extra: object = {}) => w.A.post(`/customers/${w.cus.id}/best-fit`, { typeId: w.typeId, people: [`C:${w.cus.id}`, `F:${w.son.id}`], budget: 25000, priority: 'LOWEST_PREMIUM', sumInsured: 500000, ...extra });
 
 describe('P-26 best-fit ranking', () => {

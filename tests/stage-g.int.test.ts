@@ -36,8 +36,8 @@ async function world() {
   const prod = (await A.post('/my-products', { insurerId: ins._id, typeId: type._id, code: 'FS', data: { ...data, pricingMode: 'RATE_TABLE' },
     variants: [{ name: 'Silver', sumInsuredMin: 300000, sumInsuredMax: 500000 }, { name: 'Gold', sumInsuredMin: 500000, sumInsuredMax: 1500000 }] })).body.data;
   await A.post(`/products/${prod.id}/prices`, { effectiveFrom: day(0), taxPercent: 18, rows: [{ factors: { age: '0-75' }, basePremium: 10000 }] });
-  const manual = (await A.post('/my-products', { insurerId: ins._id, typeId: type._id, code: 'MAN', data: { ...data, name: 'Manual Plan', pricingMode: 'MANUAL_ENTRY' } })).body.data;
-  const betaProd = (await A.post('/my-products', { insurerId: beta._id, typeId: type._id, code: 'BP', data: { ...data, name: 'Beta Plan', addOns: [], pricingMode: 'MANUAL_ENTRY' } })).body.data;
+  const manual = (await A.post('/my-products', { insurerId: ins._id, typeId: type._id, code: 'MAN', data: { ...data, name: 'Manual Plan', uin: 'UIN0002', pricingMode: 'MANUAL_ENTRY' } })).body.data;
+  const betaProd = (await A.post('/my-products', { insurerId: beta._id, typeId: type._id, code: 'BP', data: { ...data, name: 'Beta Plan', uin: 'UIN0003', addOns: [], pricingMode: 'MANUAL_ENTRY' } })).body.data;
   const cus = (await A.post('/customers', { name: 'Meena Iyer', mobile: newMobile(), dob: `15-04-${year - 40}` })).body.data;
   const son = (await A.post(`/customers/${cus.id}/family`, { name: 'Arjun Iyer', relationship: 'Son', dob: `10-06-${year - 9}` })).body.data;
   const [silver, gold] = prod.variants as Array<{ id: string; name: string }>;

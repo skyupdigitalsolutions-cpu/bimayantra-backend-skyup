@@ -1,4 +1,5 @@
 import type { Request } from 'express';
+import { printable } from '../../lib/pdfText.js';
 import { createHash } from 'node:crypto';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { ageOn, istToday } from '../../lib/clock.js';
@@ -53,10 +54,19 @@ async function load(ctx: AuthContext, id: string) {
 }
 
 /** Everything the checks and the calculation need, read once. */
+/** "Health", "health insurance" and "HEALTH" are the same category (profiles keep older or renamed values). */
+const categoryKey = (s: string) => s.toLowerCase().replace(/\binsurance\b/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
+/** The advisor quotes a SkyUp type listed in their profile categories, and always their own private types. */
+function worksIn(categories: string[], type: { name: string; ownerAccountId?: string | null }, accountId: string) {
+  if (type.ownerAccountId) return type.ownerAccountId === accountId;
+  const keys = new Set(categories.map(categoryKey));
+  return keys.has(categoryKey(type.name));
+}
+
 async function context(ctx: AuthContext, q: Pick<QuotationDoc, 'customerId'>, i: Inputs) {
   const customer = await Customer.findOne({ _id: q.customerId, accountId: ctx.accountId }).lean<{ _id: string; name: string; dob: string | null; status: string; number: string; mobile: string }>();
   const acc = await Account.findById(ctx.accountId, { profile: 1, ownerName: 1 }).lean<{ profile?: { professional?: { categories?: string[]; licenceValidUntil?: string | null; licenceNumber?: string | null }; business?: { displayName?: string | null } } }>();
-  const type = i.typeId ? await InsuranceType.findById(i.typeId, { name: 1, status: 1 }).lean<{ _id: string; name: string; status: string }>() : null;
+  const type = i.typeId ? await InsuranceType.findById(i.typeId, { name: 1, status: 1, ownerAccountId: 1 }).lean<{ _id: string; name: string; status: string; ownerAccountId?: string | null }>() : null;
   const insurer = i.insurerId ? await Insurer.findById(i.insurerId, { name: 1, status: 1 }).lean<{ _id: string; name: string; status: string }>() : null;
   const mapping = i.insurerId ? await InsurerMapping.findOne({ accountId: ctx.accountId, insurerId: i.insurerId, status: 'ACTIVE' }).lean<{ agentCode: string; validUntil: string | null }>() : null;
   const product = i.productId ? await Product.findOne({ _id: i.productId, $or: [{ kind: 'VERIFIED' }, { kind: 'OWN', accountId: ctx.accountId }] }).lean<ProductDoc>() : null;
@@ -86,7 +96,7 @@ function check(ctx: AuthContext, c: Ctx, i: Inputs, upTo: number): Problem[] {
   }
   if (at(3)) {
     if (!c.type) p.push({ field: 'typeId', messageId: 'GEN-01', params: { 'Field label': 'Insurance type' } });
-    else if (!(c.acc?.profile?.professional?.categories ?? []).includes(c.type.name)) p.push({ field: 'typeId', messageId: 'PRF-18', params: { 'Insurance type': c.type.name } });
+    else if (!worksIn(c.acc?.profile?.professional?.categories ?? [], c.type, ctx.accountId!)) p.push({ field: 'typeId', messageId: 'PRF-18', params: { 'Insurance type': c.type.name } });
   }
   if (at(4)) {
     if (!c.insurer) p.push({ field: 'insurerId', messageId: 'GEN-01', params: { 'Field label': 'Insurer' } });
@@ -249,7 +259,9 @@ export async function save(ctx: AuthContext, id: string, b: { version: number; s
   const step = problems.length ? Math.min(q.step, b.step) : b.step;
   const u = await Quotation.findOneAndUpdate({ _id: id, version: b.version }, { $set: { inputs, step, calc }, $inc: { version: 1 } }, { new: true }).lean<QuotationDoc>();
   if (!u) throw AppError.versionConflict('quotation', view(q));
-  if (problems.length) throw AppError.fields(problems);
+  // The typed values were saved even though a step is incomplete: send the new version, so the next save is not
+  // refused as "someone changed this quotation".
+  if (problems.length) throw AppError.fields(problems, { quotation: view(u) });
   void req;
   return view(u);
 }
@@ -271,7 +283,7 @@ export async function calc(ctx: AuthContext, id: string) {
 const LOGO_MARK_PNG = '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';
 
 /** The quotation PDF: branded layout (navy header + logo, bordered cards, accented total). Amounts print as "Rs." (standard PDF fonts have no the rupee glyph). */
-async function buildPdf(snap: Record<string, any>) {
+export async function buildPdf(snap: Record<string, any>) {
   const doc = await PDFDocument.create();
   const page = doc.addPage([595, 842]);
   const font = await doc.embedFont(StandardFonts.Helvetica);
@@ -289,15 +301,16 @@ async function buildPdf(snap: Record<string, any>) {
 
   const W = 595, M = 50, R = 545;
   const rs = (n: number) => `Rs. ${Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  const txt = (str: string, x: number, y: number, o: { f?: any; size?: number; color?: any; right?: boolean } = {}) => {
+  const txt = (raw: string, x: number, y: number, o: { f?: any; size?: number; color?: any; right?: boolean } = {}) => {
     const f = o.f ?? font, size = o.size ?? 10, color = o.color ?? INK;
+    const str = printable(f, raw); // ₹, ≥ and other characters the standard fonts cannot print (QT-13), as the comparison PDF does
     const w = f.widthOfTextAtSize(str, size);
     page.drawText(str, { x: o.right ? x - w : x, y, size, font: f, color });
     return w;
   };
   const wrap = (str: string, f: any, size: number, maxW: number) => {
     const words = String(str).split(/\s+/); const lines: string[] = []; let cur = '';
-    for (const wd of words) { const t = cur ? cur + ' ' + wd : wd; if (f.widthOfTextAtSize(t, size) > maxW && cur) { lines.push(cur); cur = wd; } else cur = t; }
+    for (const wd of words) { const t = cur ? cur + ' ' + wd : wd; if (f.widthOfTextAtSize(printable(f, t), size) > maxW && cur) { lines.push(cur); cur = wd; } else cur = t; }
     if (cur) lines.push(cur); return lines.length ? lines : [''];
   };
 
@@ -488,6 +501,8 @@ export async function listFor(ctx: AuthContext, q: { customerId?: string; status
     Insurer.find({ _id: { $in: ids('insurerId') } }, { name: 1 }).lean<Array<{ _id: string; name: string }>>(),
   ]);
   const cm = new Map(customers.map((c) => [c._id, c])); const pm = new Map(prods.map((p) => [p._id, p.name])); const im = new Map(insurers.map((i) => [i._id, i.name]));
+  // Client change (Nov 2026): an accepted quotation shows how far it got after acceptance (proposal, then policy).
+  const stages = await stagesOf(ctx.accountId!, rows.filter((r) => r.status === 'ACCEPTED').map((r) => String(r._id)));
   const items = rows.map((r) => {
     const v = view(r);
     const c = cm.get(r.customerId);
@@ -500,10 +515,35 @@ export async function listFor(ctx: AuthContext, q: { customerId?: string; status
       insurerName: inp.insurerId ? im.get(inp.insurerId) ?? null : null,
       premium: last?.final ?? (r.calc as { breakdown?: Breakdown } | null)?.breakdown?.final ?? null,
       validUntil: last?.validUntil ?? null,
+      stage: stages.get(String(r._id)) ?? null,
     };
   });
   return { items, meta: { page, limit: paged ? limit : 200, total, pages: paged ? Math.max(1, Math.ceil(total / limit)) : 1, counts } };
 }
+const POLICY_STAGE: Record<string, string> = { AWAITING_ISSUANCE: 'Awaiting issuance', ISSUED: 'Policy issued', RENEWED: 'Policy renewed', EXPIRED: 'Policy expired', CANCELLED: 'Policy cancelled' };
+const PROPOSAL_STAGE: Record<string, string> = { DRAFT: 'Proposal started', SUBMITTED: 'Proposal submitted', DECLINED: 'Proposal declined' };
+/**
+ * Where each accepted quotation is now: its policy when there is one, else its latest proposal that was not
+ * cancelled. The quotation's own status stays ACCEPTED (its lifecycle ends there); this is only shown beside it.
+ */
+export async function stagesOf(accountId: string, ids: string[]) {
+  const out = new Map<string, { kind: 'POLICY' | 'PROPOSAL'; id: string; number: string | null; status: string; label: string }>();
+  if (!ids.length) return out;
+  const [{ Proposal }, { Policy }] = await Promise.all([import('../proposals/proposal.model.js'), import('../policies/policy.model.js')]);
+  const [props, pols] = await Promise.all([
+    Proposal.find({ accountId, quotationId: { $in: ids }, status: { $ne: 'CANCELLED' } }, { quotationId: 1, number: 1, status: 1, createdAt: 1 }).sort({ createdAt: -1 }).lean<Array<{ _id: string; quotationId: string; number: string; status: string }>>(),
+    Policy.find({ accountId, quotationId: { $in: ids } }, { quotationId: 1, policyNumber: 1, status: 1, createdAt: 1 }).sort({ createdAt: -1 }).lean<Array<{ _id: string; quotationId: string; policyNumber?: string | null; status: string }>>(),
+  ]);
+  for (const p of props) if (!out.has(p.quotationId) && PROPOSAL_STAGE[p.status]) out.set(p.quotationId, { kind: 'PROPOSAL', id: p._id, number: p.number, status: p.status, label: PROPOSAL_STAGE[p.status]! });
+  const seen = new Set<string>();
+  for (const p of pols) {
+    if (seen.has(p.quotationId) || !POLICY_STAGE[p.status]) continue;
+    seen.add(p.quotationId);
+    out.set(p.quotationId, { kind: 'POLICY', id: p._id, number: p.policyNumber ?? null, status: p.status, label: POLICY_STAGE[p.status]! });
+  }
+  return out;
+}
+
 /** The frozen snapshot of a revision (what the PDF shows). */
 export async function snapshot(ctx: AuthContext, id: string, revision: number) {
   const q = await load(ctx, id);
@@ -517,11 +557,17 @@ export async function choices(ctx: AuthContext, typeId?: string, insurerId?: str
   const acc = await Account.findById(ctx.accountId, { profile: 1 }).lean<{ profile?: { professional?: { categories?: string[] } } }>();
   const cats = acc?.profile?.professional?.categories ?? [];
   // SkyUp categories the advisor works in, and the advisor's own private categories (change #4)
-  const types = (await InsuranceType.find({ status: 'ACTIVE', $or: [{ ownerAccountId: null, name: { $in: cats } }, { ownerAccountId: ctx.accountId }] }, { name: 1 }).sort({ name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((t) => ({ id: t._id, name: t.name }));
+  const types = (await InsuranceType.find({ status: 'ACTIVE', ownerAccountId: { $in: [null, ctx.accountId] } }, { name: 1, ownerAccountId: 1 }).sort({ name: 1 }).lean<Array<{ _id: string; name: string; ownerAccountId?: string | null }>>())
+    .filter((t) => worksIn(cats, t, ctx.accountId!)).map((t) => ({ id: t._id, name: t.name }));
   const today = istToday();
   const maps = await InsurerMapping.find({ accountId: ctx.accountId, status: 'ACTIVE' }, { insurerId: 1, validUntil: 1 }).lean<Array<{ insurerId: string; validUntil: string | null }>>();
   const okIds = maps.filter((m) => !m.validUntil || m.validUntil >= today).map((m) => m.insurerId);
-  const insurers = (await Insurer.find({ _id: { $in: okIds }, status: 'ACTIVE' }, { name: 1 }).sort({ name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((i) => ({ id: i._id, name: i.name }));
+  let insurerIds = okIds;
+  if (typeId) { // only insurers with a product of this type the advisor can quote (no dead end at the product step)
+    const prods = await Product.find({ typeId, insurerId: { $in: okIds }, $or: [{ kind: 'VERIFIED' }, { kind: 'OWN', accountId: ctx.accountId }] }).lean<ProductDoc[]>();
+    insurerIds = [...new Set(prods.filter((x) => effectiveStatus(x) === 'ACTIVE').map((x) => x.insurerId))];
+  }
+  const insurers = (await Insurer.find({ _id: { $in: insurerIds }, status: 'ACTIVE' }, { name: 1 }).sort({ name: 1 }).lean<Array<{ _id: string; name: string }>>()).map((i) => ({ id: i._id, name: i.name }));
   let products: Array<{ id: string; name: string; pricingMode: string; addOns: unknown[]; sumInsured: unknown; policyTerms: unknown; questions: unknown[] }> = [];
   if (typeId && insurerId) {
     const rows = await Product.find({ typeId, insurerId, $or: [{ kind: 'VERIFIED' }, { kind: 'OWN', accountId: ctx.accountId }] }).lean<ProductDoc[]>();

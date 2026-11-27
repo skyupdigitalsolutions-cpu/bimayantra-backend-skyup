@@ -79,7 +79,8 @@ async function verify(p: Provider, secret: string, config: Msg91Config | BrevoCo
   const c = config as BrevoConfig;
   const r = await checkBrevo(secret, c.fromEmail);
   if (r.ok) return;
-  if (r.reason === 'KEY') throw AppError.field('apiKey', 'INT-03', { provider: 'Brevo' });
+  if (r.reason === 'IP') throw AppError.field('apiKey', 'INT-10', { ip: r.detail });
+  if (r.reason === 'KEY') throw AppError.field('apiKey', 'INT-11', { provider: 'Brevo', reason: r.detail.replace(/\.$/, '').slice(0, 160) });
   if (r.reason === 'SENDER') throw AppError.field('fromEmail', 'INT-05');
   throw unreachable(p);
 }
