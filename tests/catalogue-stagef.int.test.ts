@@ -125,10 +125,8 @@ describe('#2 #5 variants and own features on an own product', () => {
     expect((await fields({ variants: [{ name: 'Gold', sumInsuredMin: 100000, sumInsuredMax: 500000 }] })).fields[0]).toMatchObject({ field: 'variants.0.sumInsuredMin', messageId: 'CAT-47', message: "A variant's sum insured must be within the product's range (300000 to 2500000)." });
     expect((await fields({ variants: [{ name: 'Gold', sumInsuredMin: 900000, sumInsuredMax: 500000 }] })).fields[0]).toMatchObject({ messageId: 'CAT-16' });
     expect((await fields({ variants: [{ name: 'Gold', features: { nonsense: { value: 1 } } }] })).fields[0]).toMatchObject({ field: 'variants.0.features.nonsense', messageId: 'VAL-22' });
-    const missing = await fields({ data: { ...DATA, features: {} }, variants: [{ name: 'Silver', features: { room_rent: { value: 3000 } } }, { name: 'Gold' }] });
-    expect(missing).toMatchObject({ messageId: 'CAT-13' });
-    expect(missing.message).toContain('a value for Room rent limit in Gold');
-    expect(missing.message).not.toContain('in Silver');
+    // client change (Nov 2026): on an own product template features are optional, on the product and on each variant
+    expect((await own(w, { data: { ...DATA, features: {} }, variants: [{ name: 'Silver', features: { room_rent: { value: 3000 } } }, { name: 'Gold' }] })).status).toBe(201);
     expect((await fields({ data: { ...DATA, features: { room_rent: { value: 1 } }, customFeatures: [{ name: 'Vet' }, { name: 'VET' }] } })).fields[0]).toMatchObject({ field: 'customFeatures.1.name', messageId: 'CAT-51' });
     expect((await fields({ variants: Array.from({ length: 11 }, (_, i) => ({ name: `V${i}` })) })).fields[0]).toMatchObject({ field: 'variants', messageId: 'CAT-49' });
   });
@@ -171,7 +169,8 @@ describe('#6 brochure reading for advisors', () => {
     expect(Object.fromEntries(d.map((r) => [r.key, r.value]))).toMatchObject({ uin: 'CAREHLIP26001V012526', name: 'CareFirst Family Health Plan', sumInsuredOptions: '500000, 1000000, 2500000', adultMin: '18', adultMax: '65', policyTerms: '1, 2, 3' });
     expect(d.find((r) => r.key === 'name')!.confidence).toBeLessThan(0.7); // a heading is only a guess
     expect(readVariantNames(BROCHURE).map((r) => r.label)).toEqual(['Silver', 'Gold', 'Platinum']);
-    expect(suggestFeatures(BROCHURE, FEATURES as never).map((r) => [r.label, r.value])).toEqual([['Air Ambulance Cover', 'Yes'], ['Domiciliary Treatment', 'No']]);
+    // the name as printed, Yes/No for comparisons, and the brochure's own words kept beside it (Nov 2026)
+    expect(suggestFeatures(BROCHURE, FEATURES as never).map((r) => [r.label, r.value, (r as { quote?: string }).quote])).toEqual([['Air ambulance cover', 'Yes', 'Covered'], ['Domiciliary treatment', 'No', 'Not covered']]);
   });
 
   it('Normal plan sees CAT-45; trial reads; nothing is saved until the advisor publishes with the result', async () => {
@@ -208,13 +207,17 @@ describe('#6 brochure reading for advisors', () => {
     expect(await Product.countDocuments()).toBe(0); // nothing saved yet
     const result = (await w.A.post(`/my-products/brochure-reading/${job.id}/result`)).body.data;
     expect(result.data).toMatchObject({ name: 'CareFirst Family', uin: 'CAREHLIP26001V012526', adultMin: 18, adultMax: 65, policyTerms: [1, 2, 3], sumInsured: { options: [500000, 1000000, 2500000] },
-      features: { room_rent: { value: 5000, page: 2 }, co_pay: { notStated: true }, cf_air_ambulance_cover: { value: true }, cf_domiciliary_treatment: { value: false } },
+      features: { room_rent: { value: 5000, page: 2, asPrinted: 'Room rent limit: Rs 5,000 per day', printedName: 'Room rent limit' }, co_pay: { notStated: true }, cf_air_ambulance_cover: { value: true, asPrinted: 'Covered' }, cf_domiciliary_treatment: { value: false, asPrinted: 'Not covered' } },
       // client change (Nov 2026): features read from the brochure come in without a tick, suggestions included
-      customFeatures: [{ key: 'cf_air_ambulance_cover', name: 'Air Ambulance Cover', origin: 'AI_SUGGESTED', dataType: 'Yes/No' }, { key: 'cf_domiciliary_treatment', name: 'Domiciliary Treatment', origin: 'AI_SUGGESTED', dataType: 'Yes/No' }] });
+      customFeatures: [{ key: 'cf_air_ambulance_cover', name: 'Air ambulance cover', origin: 'AI_SUGGESTED', dataType: 'Yes/No' }, { key: 'cf_domiciliary_treatment', name: 'Domiciliary treatment', origin: 'AI_SUGGESTED', dataType: 'Yes/No' }] });
     expect(result.variants).toEqual([{ name: 'Silver' }, { name: 'Gold' }]);
     // the advisor completes the form and publishes with the job: the version records what was read and checked
     const made = await w.A.post('/my-products', { insurerId: w.insurerId, typeId: w.typeId, code: 'CF-1', ocrJobId: job.id, data: { ...result.data, launchDate: '01-01-2026', pricingMode: 'MANUAL_ENTRY', taxPercent: 18 }, variants: result.variants });
     expect(made.status).toBe(201);
+    // the advisor sees the brochure's own words beside each value read from it (Nov 2026)
+    const shownToAdvisor = (await w.A.get(`/products/${made.body.data.id}`)).body.data.publishedVersion.data.features;
+    expect(shownToAdvisor.room_rent).toMatchObject({ value: 5000, asPrinted: 'Room rent limit: Rs 5,000 per day', printedName: 'Room rent limit' });
+    expect(shownToAdvisor.cf_air_ambulance_cover).toMatchObject({ value: true, asPrinted: 'Covered' });
     const v = (await ProductVersion.findById(made.body.data.publishedVersion.id).lean<{ ocrMarks: Record<string, unknown> }>())!;
     expect(Object.keys(v.ocrMarks).sort()).toEqual(['cf_air_ambulance_cover', 'co_pay', 'room_rent']);
     expect((await OcrJob.findById(job.id).lean())!.status).toBe('REVIEWED');

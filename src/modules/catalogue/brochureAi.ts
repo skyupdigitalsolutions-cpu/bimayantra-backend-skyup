@@ -16,7 +16,7 @@ export const brochureAiEnabled = () => !!env.OPENAI_API_KEY && env.BROCHURE_AI !
 
 export type AiFeature = { key: string; name: string; dataType: string };
 export type AiField = { key: string; label: string; hint?: string };
-export type AiValue = { key: string; value: string | null; page: number | null };
+export type AiValue = { key: string; value: string | null; page: number | null; quote?: string | null; printedName?: string | null };
 export type AiResult = { features: AiValue[]; details: AiValue[]; variants: Array<{ name: string; page: number | null }>; extraFeatures: Array<{ name: string; value: string; page: number | null }> };
 
 /** The product fields asked for, besides the category's own details (form fields). */
@@ -39,7 +39,7 @@ const FORMAT: Record<string, string> = {
 const schema = {
   type: 'object', additionalProperties: false, required: ['features', 'details', 'variants', 'extraFeatures'],
   properties: {
-    features: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['key', 'value', 'page'], properties: { key: { type: 'string' }, value: { type: ['string', 'null'] }, page: { type: ['integer', 'null'] } } } },
+    features: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['key', 'value', 'page', 'quote', 'printedName'], properties: { key: { type: 'string' }, value: { type: ['string', 'null'] }, page: { type: ['integer', 'null'] }, quote: { type: ['string', 'null'] }, printedName: { type: ['string', 'null'] } } } },
     details: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['key', 'value', 'page'], properties: { key: { type: 'string' }, value: { type: ['string', 'null'] }, page: { type: ['integer', 'null'] } } } },
     variants: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['name', 'page'], properties: { name: { type: 'string' }, page: { type: ['integer', 'null'] } } } },
     extraFeatures: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['name', 'value', 'page'], properties: { name: { type: 'string' }, value: { type: 'string' }, page: { type: ['integer', 'null'] } } } },
@@ -56,6 +56,8 @@ export function buildRequest(pages: Array<{ number: number; text: string }>, fea
     'For durations, convert to the unit asked (e.g. "2 years" for a Months feature is 24). For amounts, give rupees (e.g. "Rs. 2 lakh" is 200000). For "up to sum insured" on an amount feature, give null and do not invent a number.',
     'details: the product fields asked for, with null when not stated. variants: the plan or variant names the brochure offers (e.g. Silver, Gold, Plan A), not features. extraFeatures: up to 15 other benefits the brochure states that are not in the feature list, with a short value.',
     'page: the page number (from the === Page n === markers) where the value is stated.',
+    'quote: the brochure\'s exact words for that feature\'s value, copied verbatim (max 200 characters), e.g. "Covered up to Sum Insured". printedName: the feature\'s name exactly as the brochure prints it, e.g. "In-Patient Treatment" for In-patient hospitalisation. Both null when the feature is not mentioned.',
+    'extraFeatures: name exactly as printed in the brochure, and value as the brochure\'s exact words (verbatim, max 200 characters). Only real benefits or coverages: no disclaimers, contact details, legal notes or sentence fragments.',
   ].join('\n');
   const ask = {
     features: features.map((f) => ({ key: f.key, name: f.name, format: FORMAT[f.dataType] ?? FORMAT.Text })),
@@ -94,7 +96,7 @@ export async function aiExtract(pages: Array<{ number: number; text: string }>, 
 }
 
 type FeatureRow = { key: string; name: string; dataType: string; found: boolean; value: string | null; confidence: number; page: number | null; decision: null; editedValue: null };
-type DetailRow = { key: string; label: string; value: string | null; confidence: number; page: number | null; decision: null; editedValue: null };
+type DetailRow = { key: string; label: string; value: string | null; confidence: number; page: number | null; decision: null; editedValue: null; quote?: string | null };
 const AI_CONFIDENCE = 0.9;
 const clean = (v: string | null | undefined) => (v === null || v === undefined ? null : String(v).trim().slice(0, 200) || null);
 
@@ -111,7 +113,8 @@ export function mergeAi(
   const fv = new Map(ai.features.map((f) => [f.key, f]));
   const outRows = rows.map((r) => {
     const v = clean(fv.get(r.key)?.value);
-    return v ? { ...r, found: true, value: v, confidence: AI_CONFIDENCE, page: fv.get(r.key)?.page ?? r.page } : r;
+    const got = fv.get(r.key);
+    return v ? { ...r, found: true, value: v, confidence: AI_CONFIDENCE, page: got?.page ?? r.page, quote: clean(got?.quote) ?? (r as { quote?: string | null }).quote ?? null, printedName: clean(got?.printedName) ?? (r as { printedName?: string | null }).printedName ?? null } : r;
   });
   const details = [...extra.details];
   for (const d of ai.details) {
@@ -132,7 +135,7 @@ export function mergeAi(
     if (!name || !value) continue;
     const key = `cf_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 50)}`;
     if (suggestions.some((x) => x.key === key) || outRows.some((r) => r.name.toLowerCase() === name.toLowerCase())) continue;
-    suggestions.push({ key, label: name.replace(/\b\w/g, (c) => c.toUpperCase()), value, confidence: 0.8, page: s.page ?? null, decision: null, editedValue: null });
+    suggestions.push({ key, label: name, value, confidence: 0.8, page: s.page ?? null, decision: null, editedValue: null, quote: value } as DetailRow); // as printed
   }
   return { rows: outRows, details, variants, suggestions: suggestions.slice(0, 30) };
 }

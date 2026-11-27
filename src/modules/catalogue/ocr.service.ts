@@ -27,11 +27,13 @@ const row = new Schema({
   key: String, name: String, dataType: String,
   found: { type: Boolean, default: false }, value: { type: String, default: null }, confidence: { type: Number, default: 0 }, page: { type: Number, default: null },
   decision: { type: String, enum: ['ACCEPT', 'EDIT', 'IGNORE', 'NOT_STATED', null], default: null }, editedValue: { type: String, default: null },
+  quote: { type: String, default: null }, printedName: { type: String, default: null }, // the brochure's own words (Nov 2026)
 }, { _id: false });
 /** Change #6: product details read (name, UIN, sum insured, entry ages, terms), variant names, and AI-suggested features. */
 const detailRow = new Schema({
   key: String, label: String, value: { type: String, default: null }, confidence: { type: Number, default: 0 }, page: { type: Number, default: null },
   decision: { type: String, enum: ['ACCEPT', 'EDIT', 'IGNORE', 'NOT_STATED', null], default: null }, editedValue: { type: String, default: null },
+  quote: { type: String, default: null },
 }, { _id: false });
 const jobSchema = new Schema(
   {
@@ -141,7 +143,7 @@ export function matchFeatures(features: Feature[], pages: Page[]) {
     const all = name.split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !FILLER.has(w));
     const core = all.filter((w) => !GENERIC.has(w));
     const wordSets = [all, ...(core.length && core.length < all.length ? [core] : []), ...(ALIASES[name] ?? [])].map((ws) => ws.map(wordRe));
-    let best: { value: string; confidence: number; page: number } | null = null;
+    let best: { value: string; confidence: number; page: number; quote?: string; printedName?: string | null } | null = null;
     for (const pg of pages) {
       const lines = pg.text.split(/\r?\n/);
       const normed = lines.map(normFeatureText);
@@ -160,12 +162,19 @@ export function matchFeatures(features: Feature[], pages: Page[]) {
         // A Yes/No feature named in the brochure with no word either way is offered (it is listed as a benefit),
         // unless the line is about exclusions. Lower confidence, so it is easy to spot and change.
         if (value === null && f.dataType === 'Yes/No' && !/exclu|not covered|not payable/.test(`${low} ${normed[i - 1] ?? ''}`)) { value = 'Yes'; factor *= 0.75; }
-        if (value !== null) best = { value, confidence: Math.round(pg.confidence * factor * 100) / 100, page: pg.number };
+        if (value !== null) {
+          // The brochure's words: the line(s) the value was read from, and the feature's name as printed there
+          const used = [orig, ...(extract(f.dataType, after.replace(/^[\s:–-]+/, ''), f.name) === null ? [lines[i + 1] ?? ''] : [])].map((l) => l.trim()).filter(Boolean);
+          const quote = used.join(' ').replace(/\s+/g, ' ').slice(0, 300);
+          const cut = orig.split(/\s*(?::|–|\s-\s|\s{2,}|\t)\s*/)[0]!.trim();
+          const printedName = cut && cut.length <= 80 && cut.length < orig.trim().length ? cut : null;
+          best = { value, confidence: Math.round(pg.confidence * factor * 100) / 100, page: pg.number, quote, printedName };
+        }
       });
       if (best) break;
     }
-    const b = best as { value: string; confidence: number; page: number } | null;
-    return { key: f.key, name: f.name, dataType: f.dataType, found: !!b, value: b?.value ?? null, confidence: b?.confidence ?? 0, page: b?.page ?? null, decision: null, editedValue: null };
+    const b = best as { value: string; confidence: number; page: number; quote?: string; printedName?: string | null } | null;
+    return { key: f.key, name: f.name, dataType: f.dataType, found: !!b, value: b?.value ?? null, confidence: b?.confidence ?? 0, page: b?.page ?? null, decision: null, editedValue: null, quote: b?.quote ?? null, printedName: b?.printedName ?? null };
   });
 }
 
@@ -397,7 +406,7 @@ import { Account } from '../accounts/account.model.js';
 import { allowsBrochureReading, effectiveStatus as subStatus } from '../accounts/subscription.js';
 import { assertVisibleType } from './private.service.js';
 
-type Row = { key: string; label: string; value: string | null; confidence: number; page: number | null; decision: null; editedValue: null };
+type Row = { key: string; label: string; value: string | null; confidence: number; page: number | null; decision: null; editedValue: null; quote?: string | null };
 const mk = (key: string, label: string, value: string | null, confidence: number, page: number | null): Row => ({ key, label, value, confidence: Math.round(confidence * 100) / 100, page, decision: null, editedValue: null });
 
 /** Rupees in Indian wording: "5 lakh" = 500000, "1 crore" = 10000000, "₹3,00,000" = 300000. */
@@ -510,16 +519,21 @@ export function suggestFeatures(pages: Page[], features: Feature[]): Row[] {
   const covered = (label: string) => known.some((k) => k === label || label.includes(k) || k.includes(label) || k.split(/\s+/).filter((w) => w.length > 3).every((w) => label.includes(w)));
   const out: Row[] = [];
   for (const pg of pages) for (const line of pg.text.split(/\r?\n/)) {
-    const m = /^\s*([A-Za-z][A-Za-z ()/&'’-]{3,60}?)\s*[:–-]\s*(.{1,120})$/.exec(line);
+    // "Name: value" or "Name – value" (a dash with spaces; "Pre-authorise", "Anti-rebating" are words, not a split)
+    const m = /^\s*([A-Za-z][A-Za-z ()/&'’-]{3,60}?)\s*(?::|\s[–-]\s|–)\s*(.{1,200})$/.exec(line);
     if (!m) continue;
     const label = m[1]!.replace(/\s+/g, ' ').trim();
     const low = label.toLowerCase();
+    const printed = m[2]!.replace(/\s+/g, ' ').trim();
     if (covered(low) || /sum (?:insured|assured)|entry age|policy (?:term|tenure)|uin|premium/i.test(low)) continue;
-    const yes = extract('Yes/No', m[2]!);
-    const value = yes ?? extract('Text', m[2]!);
+    // Nov 2026: brochure small print is not a benefit ("Disclaimer", "Printing code", sentence fragments)
+    if (/disclaimer|printing|warning|note\b|terms|conditions|subject matter|registration|irdai|cin\b|toll.?free|website|e-?mail|address|call us|visit/i.test(low)) continue;
+    if (label.split(' ').length > 6 || !/^[A-Z0-9₹(]|^rs\.?\s/i.test(printed) || /^[a-z]/.test(printed)) continue;
+    const yes = extract('Yes/No', printed);
     const key = `cf_${low.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 50)}`;
-    if (!value || out.some((o) => o.key === key)) continue;
-    out.push(mk(key, label.replace(/\b\w/g, (c) => c.toUpperCase()), value, pg.confidence * (yes ? 0.8 : 0.6), pg.number));
+    if (out.some((o) => o.key === key)) continue;
+    // the brochure's own words: the name as printed and the value as printed (Yes/No kept for comparisons)
+    out.push({ ...mk(key, label, yes ?? printed.slice(0, 200), pg.confidence * (yes ? 0.8 : 0.6), pg.number), quote: printed.slice(0, 300) } as Row);
   }
   return out.slice(0, 20);
 }
@@ -549,14 +563,17 @@ export function decidedResult(j: Pick<JobDoc, 'rows' | 'details' | 'variants' | 
   }
   for (const r of j.rows) {
     if (!r.decision || r.decision === 'IGNORE') continue;
-    data.features[r.key!] = r.decision === 'NOT_STATED' ? { notStated: true } : { value: typedValue(r.dataType ?? 'Text', val(r)), page: r.page ?? null };
+    // An edited value is the advisor's; an accepted one keeps the brochure's own words beside the value used for comparisons
+    const words = r.decision === 'ACCEPT' ? { ...((r as { quote?: string | null }).quote ? { asPrinted: (r as { quote: string }).quote } : {}), ...((r as { printedName?: string | null }).printedName ? { printedName: (r as { printedName: string }).printedName } : {}) } : {};
+    data.features[r.key!] = r.decision === 'NOT_STATED' ? { notStated: true } : { value: typedValue(r.dataType ?? 'Text', val(r)), page: r.page ?? null, ...words };
   }
   const customFeatures: Array<{ key: string; name: string; origin: 'AI_SUGGESTED'; dataType: string }> = [];
   for (const r of j.suggestions ?? []) {
     if (!taken(r)) continue;
     const v = val(r); const yn = /^(yes|no)$/i.test(v);
     customFeatures.push({ key: r.key!, name: r.label ?? r.key!, origin: 'AI_SUGGESTED', dataType: yn ? 'Yes/No' : 'Text' });
-    data.features[r.key!] = { value: typedValue(yn ? 'Yes/No' : 'Text', v), page: r.page ?? null };
+    const q = (r as { quote?: string | null }).quote;
+    data.features[r.key!] = { value: typedValue(yn ? 'Yes/No' : 'Text', v), page: r.page ?? null, ...(q && r.decision !== 'EDIT' ? { asPrinted: q } : {}) };
   }
   const variants = (j.variants ?? []).filter(taken).map((r) => ({ name: val(r) }));
   return { data, customFeatures, variants };

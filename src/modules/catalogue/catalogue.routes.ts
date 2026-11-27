@@ -167,7 +167,8 @@ export const productData = z.object({
   adultMin: age().optional(), adultMax: age().optional(), coversChildren: z.boolean().optional(), childMin: optional(age()), childMax: optional(age()),
   sumInsured: z.object({ options: z.array(rupees()).max(50).optional(), min: optional(rupees()), max: optional(rupees()) }).strict().optional(),
   policyTerms: z.array(wholeNumber(1, () => cfgNum('CFG-58'))).max(50).optional(),
-  features: z.record(z.string().max(60), z.object({ value: z.union([z.string().max(500), z.number(), z.boolean(), z.null()]).optional(), page: z.number().int().min(1).max(2000).nullable().optional(), notStated: z.boolean().optional() }).strict()).optional(),
+  // asPrinted / printedName (Nov 2026): the brochure's exact words for the value and for the feature's name
+  features: z.record(z.string().max(60), z.object({ value: z.union([z.string().max(500), z.number(), z.boolean(), z.null()]).optional(), page: z.number().int().min(1).max(2000).nullable().optional(), notStated: z.boolean().optional(), asPrinted: z.string().trim().max(500).nullable().optional(), printedName: z.string().trim().max(160).nullable().optional() }).strict()).optional(),
   addOns: z.array(z.object({ name: required(shortText()), description: optional(shortText()), priceType: required(enumOf(['FIXED', 'PERCENT'] as const)), value: required(z.number().min(0).max(10_000_000)) }).strict()).max(200).optional(),
   pricingMode: enumOf(['RATE_TABLE', 'MANUAL_ENTRY'] as const).optional(), taxPercent: percent().optional(),
   nomineeRequired: z.boolean().optional(), maxNominees: wholeNumber(1, () => cfgNum('CFG-53')).optional(), gracePeriodDays: optional(wholeNumber(0, () => 365)),
@@ -179,7 +180,7 @@ export const productData = z.object({
   // Change #5: features outside the template (✓/✗ or a short text per variant)
   customFeatures: z.array(z.object({ key: z.string().regex(/^cf_[a-z0-9_]{1,50}$/).optional(), name: required(shortText()), origin: enumOf(['ADVISOR', 'AI_SUGGESTED', 'SKYUP'] as const).optional(), group: optional(shortText()), dataType: enumOf(['Yes/No', 'Text'] as const).optional() }).strict()).max(50).optional(),
 }).strict();
-const featureValues = z.record(z.string().max(60), z.object({ value: z.union([z.string().max(500), z.number(), z.boolean(), z.null()]).optional(), page: z.number().int().min(1).max(2000).nullable().optional(), notStated: z.boolean().optional(), included: z.boolean().optional() }).strict());
+const featureValues = z.record(z.string().max(60), z.object({ value: z.union([z.string().max(500), z.number(), z.boolean(), z.null()]).optional(), page: z.number().int().min(1).max(2000).nullable().optional(), notStated: z.boolean().optional(), included: z.boolean().optional(), asPrinted: z.string().trim().max(500).nullable().optional(), printedName: z.string().trim().max(160).nullable().optional() }).strict());
 /** Change #2: one variant (Silver, Gold…): its cover type, sum-insured range inside the product's, and its own values. */
 export const variantInput = z.object({
   name: required(shortText()), coverType: optional(enumOf(['INDIVIDUAL', 'FLOATER'] as const)),

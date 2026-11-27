@@ -18,7 +18,7 @@ import { AppError } from '../../lib/errors.js';
 import { ProductVariant, defaultVariantFields, type VariantDoc } from './variant.model.js';
 
 export const MAX_VARIANTS = 10; // [TO CONFIRM] no limit is stated in the design
-export type FeatureValue = { value?: string | number | boolean | null; page?: number | null; notStated?: boolean; included?: boolean };
+export type FeatureValue = { value?: string | number | boolean | null; page?: number | null; notStated?: boolean; included?: boolean; asPrinted?: string | null; printedName?: string | null };
 export interface CustomFeature { key?: string; name: string; origin?: 'ADVISOR' | 'AI_SUGGESTED' | 'SKYUP'; group?: string | null; dataType?: string }
 export interface VariantInput {
   name: string; coverType?: 'INDIVIDUAL' | 'FLOATER' | null; sumInsuredMin?: number | null; sumInsuredMax?: number | null;

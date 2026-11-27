@@ -24,7 +24,7 @@ export interface ProductData {
   adultMin?: number; adultMax?: number; coversChildren?: boolean; childMin?: number | null; childMax?: number | null;
   sumInsured?: { options?: number[]; min?: number | null; max?: number | null };
   policyTerms?: number[];
-  features?: Record<string, { value?: string | number | boolean | null; page?: number | null; notStated?: boolean }>;
+  features?: Record<string, { value?: string | number | boolean | null; page?: number | null; notStated?: boolean; asPrinted?: string | null; printedName?: string | null }>;
   addOns?: Array<{ name: string; description?: string | null; priceType: 'FIXED' | 'PERCENT'; value: number }>;
   pricingMode?: 'RATE_TABLE' | 'MANUAL_ENTRY'; taxPercent?: number;
   nomineeRequired?: boolean; maxNominees?: number; gracePeriodDays?: number | null;
@@ -132,7 +132,9 @@ export async function publishCheck(kind: 'VERIFIED' | 'OWN', insurerId: string, 
   if (det.problems.length) throw AppError.fields(det.problems);
   missing.push(...missingDetails(form, det.clean));
   if ((d.addOns?.length ?? 0) > cfgNum('CFG-40')) f('addOns', 'CAT-15', { 'CFG-40': cfgNum('CFG-40') });
-  for (const feat of (used ?? tpl)?.features ?? []) {
+  // Client change (Nov 2026): on the advisor's own product every template feature is optional: what the brochure
+  // states is saved, the rest can be left out. SkyUp-verified products still need their required features.
+  for (const feat of kind === 'OWN' ? [] : (used ?? tpl)?.features ?? []) {
     if (!feat.requiredToPublish) continue;
     const v = d.features?.[feat.key];
     if (!v || (!v.notStated && (v.value === undefined || v.value === null || v.value === ''))) missing.push(`a value for ${feat.name}`);
@@ -142,7 +144,7 @@ export async function publishCheck(kind: 'VERIFIED' | 'OWN', insurerId: string, 
   // Changes #2, #5: variants and own features
   const custom = d.customFeatures ?? [];
   checkVariants(variants, d.sumInsured, new Set([...((used ?? tpl)?.features ?? []).map((x) => x.key), ...custom.map((c) => c.key!)]));
-  missing.push(...missingOnVariants(variants, ((used ?? tpl)?.features ?? []).filter((x) => x.requiredToPublish), (d.features ?? {}) as Record<string, FeatureValue>));
+  if (kind !== 'OWN') missing.push(...missingOnVariants(variants, ((used ?? tpl)?.features ?? []).filter((x) => x.requiredToPublish), (d.features ?? {}) as Record<string, FeatureValue>));
   if (kind === 'VERIFIED') {
     if (!d.brochureFileId && !(d.sourceLink && d.sourceCheckedOn)) missing.push('the insurer page link and the date it was checked');
     if (d.pricingMode === 'RATE_TABLE' && !(productId && (await hasReference(productId)))) missing.push('a SkyUp reference price version (P-24)');
@@ -392,7 +394,8 @@ export async function productApprovals(ctx: AuthContext) {
 
 /** Feature values as advisors see them: "Not stated in source" shows as "Not stated by insurer" (AC-P22-5). */
 function advisorData(d: ProductData) {
-  const features = Object.fromEntries(Object.entries(d.features ?? {}).map(([k, v]) => [k, v.notStated ? { value: NOT_STATED, page: null } : { value: v.value ?? null, page: v.page ?? null }]));
+  // asPrinted / printedName: the brochure's own words, shown beside the value (Nov 2026)
+  const features = Object.fromEntries(Object.entries(d.features ?? {}).map(([k, v]) => [k, v.notStated ? { value: NOT_STATED, page: null } : { value: v.value ?? null, page: v.page ?? null, ...(v.asPrinted ? { asPrinted: v.asPrinted } : {}), ...(v.printedName ? { printedName: v.printedName } : {}) }]));
   return { ...d, features };
 }
 

@@ -6,7 +6,7 @@ import { decidedResult, launchDateOf } from '../src/modules/catalogue/ocr.servic
 const FEATURES = [{ key: 'opd', name: 'OPD cover', dataType: 'Yes/No' }, { key: 'amb', name: 'Road ambulance', dataType: 'Amount in ₹' }, { key: 'iwp', name: 'Initial waiting period', dataType: 'Days' }];
 const row = (key: string, name: string, dataType: string, value: string | null) => ({ key, name, dataType, found: !!value, value, confidence: value ? 0.6 : 0, page: value ? 1 : null, decision: null, editedValue: null });
 const AI = {
-  features: [{ key: 'opd', value: 'Yes', page: 3 }, { key: 'amb', value: '2000', page: 4 }, { key: 'iwp', value: null, page: null }],
+  features: [{ key: 'opd', value: 'Yes', page: 3, quote: 'Out-patient consultations covered', printedName: 'OPD Treatment' }, { key: 'amb', value: '2000', page: 4 }, { key: 'iwp', value: null, page: null }],
   details: [{ key: 'name', value: 'Optima Secure', page: 1 }, { key: 'launchDate', value: '2024-04-01', page: 1 }, { key: 'gracePeriodDays', value: '30', page: 5 }],
   variants: [{ name: 'Silver', page: 2 }, { name: 'Gold', page: 2 }],
   extraFeatures: [{ name: 'Restore benefit', value: '100% of sum insured', page: 6 }],
@@ -27,10 +27,11 @@ describe('brochure reading with gpt-4o-mini (Nov 2026)', () => {
       { details: [], variants: [{ key: 'plus', label: 'Plus', value: 'Plus', confidence: 0.5, page: 1, decision: null, editedValue: null }], suggestions: [] }, AI, { name: 'Product name', launchDate: 'Launch date', gracePeriodDays: 'Grace period (days)' });
     expect(out.rows.map((r) => [r.key, r.found, r.value, r.page])).toEqual([['opd', true, 'Yes', 3], ['amb', true, '2000', 4], ['iwp', true, '30', 1]]);
     expect(out.variants.map((v) => v.value)).toEqual(['Silver', 'Gold']);
-    expect(out.suggestions[0]).toMatchObject({ key: 'cf_restore_benefit', label: 'Restore Benefit', value: '100% of sum insured' });
+    expect(out.suggestions[0]).toMatchObject({ key: 'cf_restore_benefit', label: 'Restore benefit', value: '100% of sum insured', quote: '100% of sum insured' }); // as printed
     // accepted values reach the product data, launch date and grace period included
     const accept = <T extends object>(l: T[]) => l.map((r) => ({ ...r, decision: 'ACCEPT' as const }));
     const res = decidedResult({ rows: accept(out.rows) as never, details: accept(out.details) as never, variants: accept(out.variants) as never, suggestions: [] as never });
+    expect(res.data.features.opd).toEqual({ value: true, page: 3, asPrinted: 'Out-patient consultations covered', printedName: 'OPD Treatment' }); // the brochure's words
     expect(res.data).toMatchObject({ name: 'Optima Secure', launchDate: '2024-04-01', gracePeriodDays: 30, features: { opd: { value: true }, amb: { value: 2000 } } });
     expect(res.variants).toEqual([{ name: 'Silver' }, { name: 'Gold' }]);
   });
