@@ -50,6 +50,9 @@ const jobSchema = new Schema(
      * ignoreCategoryCheck if the call is wrong.
      */
     status: { type: String, enum: ['QUEUED', 'PROCESSING', 'REVIEW_REQUIRED', 'REVIEWED', 'FAILED', 'WRONG_CATEGORY', 'WRONG_COMPANY'], default: 'QUEUED' },
+    /** Progress while PROCESSING (Nov 2026, for the reading screen): READING_PAGES (OCR), then EXTRACTING (matching / AI). */
+    stage: { type: String, enum: ['READING_PAGES', 'EXTRACTING', null], default: null },
+    pageCount: { type: Number, default: null },
     /** The company chosen in step 2; WRONG_COMPANY when the brochure is clearly another insurer's (OCR-10, brochureInsurer.ts). */
     insurerId: { type: String, default: null },
     detectedCompany: { type: new Schema({ id: String, name: String }, { _id: false }), default: null },
@@ -172,6 +175,7 @@ const flaggedDetail = (r: { value?: string | null; confidence?: number | null })
 const mismatchParams = (j: Pick<JobDoc, 'detected' | 'categoryName'>) => ({ detected: j.detected?.label ?? 'another', chosen: j.categoryName ?? 'the chosen' });
 const view = (j: JobDoc) => ({
   id: j._id, kind: j.kind ?? 'SKYUP', versionId: j.versionId, typeId: j.typeId ?? null, fileId: j.fileId, status: j.status, startedAt: j.startedAt, error: j.error, applied: j.applied, threshold: cfgNum('CFG-37'),
+  stage: j.status === 'PROCESSING' ? (j as { stage?: string | null }).stage ?? 'READING_PAGES' : null, pageCount: (j as { pageCount?: number | null }).pageCount ?? null,
   category: { form: j.form ?? null, name: j.categoryName ?? null }, detectedCategory: j.detected ? { form: j.detected.form ?? null, label: j.detected.label ?? null } : null,
   ...(j.status === 'WRONG_CATEGORY' ? { messageId: 'OCR-09', message: msg('OCR-09', mismatchParams(j)) } : {}),
   company: j.insurerId ? { id: j.insurerId, name: j.companyName ?? null } : null, detectedCompany: j.detectedCompany ?? null,
@@ -232,9 +236,10 @@ function run(jobId: string, templateId: string, bytes: Buffer, mime: string, ctx
   void (async () => {
     const tell = (messageId: 'OCR-02' | 'OCR-03' | 'OCR-09' | 'OCR-10', params = {}) => notify({ userId: ctx.userId, accountId: null, kind: messageId === 'OCR-02' ? 'OCR_DONE' : 'OCR_FAILED', messageId, params, dedupeKey: `${messageId}|${jobId}` }).catch(() => undefined);
     try {
-      await OcrJob.updateOne({ _id: jobId }, { $set: { status: 'PROCESSING' } });
+      await OcrJob.updateOne({ _id: jobId }, { $set: { status: 'PROCESSING', stage: 'READING_PAGES' } });
       const limit = new Promise<never>((_, fail) => setTimeout(() => fail(new Error('OCR time limit (CFG-38) reached')), cfgNum('CFG-38') * 60_000).unref());
       const read = await Promise.race([ocrPages(bytes, mime), limit]);
+      await OcrJob.updateOne({ _id: jobId }, { $set: { stage: 'EXTRACTING', pageCount: read.pages.length } }); // the reading screen's progress
       // Is this brochure for the chosen category at all? (client requirement: a Motor brochure on a Health product is refused)
       const job = await OcrJob.findById(jobId, { form: 1, categoryName: 1, ignoreCategoryCheck: 1, insurerId: 1, kind: 1, accountId: 1 }).lean<Pick<JobDoc, 'form' | 'categoryName' | 'ignoreCategoryCheck' | 'insurerId' | 'kind' | 'accountId'>>();
       const looks = detectCategory(read.text);
