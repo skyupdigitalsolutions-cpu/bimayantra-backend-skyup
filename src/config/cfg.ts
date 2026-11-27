@@ -44,7 +44,7 @@ const DEFS = {
   'CFG-24': { label: 'Search starts after', unit: 'characters', value: 3, change: 'ADM', range: [1, 10] },
   'CFG-33': {
     label: 'Lead lost reasons',
-    value: ['Not interested', 'Bought elsewhere', 'Not reachable', 'Not eligible', 'Premium too high', 'Duplicate', 'Other'],
+    value: ['Not interested', 'Bought elsewhere', 'Already insured', 'Not reachable', 'Invalid number', 'Wrong number', 'Wrong person', 'Not eligible', 'Premium too high', 'Duplicate', 'Other'],
     change: 'ADM',
   },
   'CFG-35': { label: 'Family members per customer', unit: 'count', value: 15, change: 'ADM', range: [1, 100] },

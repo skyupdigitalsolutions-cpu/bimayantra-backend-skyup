@@ -21,7 +21,7 @@ import type { CustomerExtras } from '../customers/customers.schemas.js';
 import { can, type AuthContext } from '../rbac/capabilities.js';
 import { Task } from '../tasks/task.model.js';
 import { User } from '../users/user.model.js';
-import { CHANNEL_LABEL, Lead, OUTCOME_LABEL, type LeadDoc } from './lead.model.js';
+import { CALL_OUTCOMES, CHANNEL_LABEL, Lead, OUTCOME_LABEL, type CallOutcome, type LeadDoc } from './lead.model.js';
 import { CONVERTIBLE, STATUS_LABEL, advisorOnly, allowedMoves, canConvert, canMove, type LeadStatus } from './leadStatus.js';
 
 type FieldErr = { field: string; messageId: MessageId; params?: MessageParams };
@@ -61,6 +61,7 @@ async function detail(l: LeadDoc, ctx: AuthContext) {
     altMobile: l.altMobile, email: l.email, campaign: l.campaign, interests: l.interests, notes: l.notes,
     referrer: l.referrerUserId ? { id: l.referrerUserId, name: name(l.referrerUserId) } : null,
     referredBy: referredBy ? { id: referredBy._id, number: referredBy.number, name: referredBy.name } : null,
+    referredByPerson: (l as { referredByName?: string | null }).referredByName ? { name: (l as { referredByName: string }).referredByName, mobile: (l as { referredByMobile?: string | null }).referredByMobile ?? null } : null,
     lostReason: l.lostReason, lostNote: l.lostNote, convertedAt: l.convertedAt,
     customer: customer ? { id: customer._id, number: customer.number, name: customer.name } : null,
     createdBy: name(l.createdBy), updatedAt: l.updatedAt,
@@ -71,7 +72,8 @@ async function detail(l: LeadDoc, ctx: AuthContext) {
     canRemove: !!(l as { withdrawal?: unknown }).withdrawal && l.status !== 'CONVERTED' && !l.customerId && can(ctx.role, 'leads.loseReopen'),
     // AC-P13-5: the timeline shows every contact and status change in order (newest first here).
     contacts: [...l.contacts].reverse().map((c) => ({
-      id: c._id, outcome: c.outcome, outcomeLabel: OUTCOME_LABEL[c.outcome as keyof typeof OUTCOME_LABEL],
+      id: c._id, outcome: c.outcome, outcomeLabel: callLabel(c) ?? OUTCOME_LABEL[c.outcome as keyof typeof OUTCOME_LABEL],
+      answered: (c as { answered?: boolean | null }).answered ?? null, callOutcome: (c as { callOutcome?: string | null }).callOutcome ?? null,
       channel: (c as { channel?: string | null }).channel ?? null, channelLabel: CHANNEL_LABEL[(c as { channel?: keyof typeof CHANNEL_LABEL }).channel as keyof typeof CHANNEL_LABEL] ?? null,
       note: c.note, at: c.at, by: name(c.by),
     })),
@@ -127,10 +129,10 @@ function applyDuplicateRule(d: Awaited<ReturnType<typeof findLeadDuplicates>>, c
  * campaign name belong to their source only. "Campaign" requires the name; Meta, Google and LinkedIn Ads keep an
  * optional "Ad or campaign name"; every other source clears it.
  */
-async function resolveSource(accountId: string, s: { sourceCode: LeadSourceCode; referrerId?: string | null; referredByCustomerId?: string | null; campaign?: string | null }) {
+async function resolveSource(accountId: string, s: { sourceCode: LeadSourceCode; referrerId?: string | null; referredByCustomerId?: string | null; referredByName?: string | null; referredByMobile?: string | null; campaign?: string | null }) {
   const errs: FieldErr[] = [];
   const def = sourceDef(s.sourceCode);
-  const out = { source: sourceLabel(s.sourceCode), sourceCode: s.sourceCode, referrerUserId: null as string | null, referredByCustomerId: null as string | null, campaign: null as string | null };
+  const out = { source: sourceLabel(s.sourceCode), sourceCode: s.sourceCode, referrerUserId: null as string | null, referredByCustomerId: null as string | null, referredByName: null as string | null, referredByMobile: null as string | null, campaign: null as string | null };
   if (def.needs === 'REFERRER') {
     if (!s.referrerId) errs.push({ field: 'referrerId', messageId: 'GEN-01', params: { 'Field label': 'Referrer' } });
     else if (!(await User.exists({ _id: s.referrerId, accountId, role: 'REF', status: 'ACTIVE' }))) errs.push({ field: 'referrerId', messageId: 'VAL-22' });
@@ -140,6 +142,9 @@ async function resolveSource(accountId: string, s: { sourceCode: LeadSourceCode;
     if (!s.referredByCustomerId) errs.push({ field: 'referredByCustomerId', messageId: 'GEN-01', params: { 'Field label': 'Referred by client' } });
     else if (!(await Customer.exists({ _id: s.referredByCustomerId, accountId, status: 'ACTIVE' }))) errs.push({ field: 'referredByCustomerId', messageId: 'VAL-22' });
     else out.referredByCustomerId = s.referredByCustomerId;
+  } else if (def.needs === 'PERSON') { // Nov 2026: referred by someone outside the system; the name is required
+    if (!s.referredByName) errs.push({ field: 'referredByName', messageId: 'GEN-01', params: { 'Field label': 'Referred by' } });
+    else { out.referredByName = s.referredByName; out.referredByMobile = s.referredByMobile ?? null; }
   }
   if (def.campaignName === 'REQUIRED' && !s.campaign) errs.push({ field: 'campaign', messageId: 'GEN-01', params: { 'Field label': 'Campaign name' } });
   else if (def.campaignName) out.campaign = s.campaign ?? null;
@@ -223,7 +228,7 @@ export async function duplicateCheck(ctx: AuthContext, q: { mobile: string; name
 
 interface LeadInput {
   pipelineId: string; name: string; mobile: string; altMobile?: string | null; email?: string | null; source: LeadSourceCode; referrerId?: string | null;
-  referredByCustomerId?: string | null; campaign?: string | null; interests?: string[]; priority?: string | null; nextFollowUpAt?: Date | null;
+  referredByCustomerId?: string | null; referredByName?: string | null; referredByMobile?: string | null; campaign?: string | null; interests?: string[]; priority?: string | null; nextFollowUpAt?: Date | null;
   notes?: string | null; confirm: string[];
 }
 
@@ -283,10 +288,13 @@ export async function updateLead(ctx: AuthContext, id: string, b: Partial<LeadIn
     altMobile: b.altMobile !== undefined ? b.altMobile : l.altMobile, sourceCode: b.source ?? currentCode,
     referrerId: b.referrerId !== undefined ? b.referrerId : l.referrerUserId,
     referredByCustomerId: b.referredByCustomerId !== undefined ? b.referredByCustomerId : l.referredByCustomerId,
+    referredByName: b.referredByName !== undefined ? b.referredByName : (l as { referredByName?: string | null }).referredByName ?? null,
+    referredByMobile: b.referredByMobile !== undefined ? b.referredByMobile : (l as { referredByMobile?: string | null }).referredByMobile ?? null,
     campaign: b.campaign !== undefined ? b.campaign : l.campaign,
   };
   const sourceChanged = next.sourceCode !== currentCode || (next.referrerId ?? null) !== l.referrerUserId
-    || (next.referredByCustomerId ?? null) !== l.referredByCustomerId || (next.campaign ?? null) !== l.campaign;
+    || (next.referredByCustomerId ?? null) !== l.referredByCustomerId || (next.campaign ?? null) !== l.campaign
+    || (next.referredByName ?? null) !== ((l as { referredByName?: string | null }).referredByName ?? null) || (next.referredByMobile ?? null) !== ((l as { referredByMobile?: string | null }).referredByMobile ?? null);
   if (sourceChanged && !can(ctx.role, 'leads.correctSource')) throw AppError.forbidden();
 
   const errs: FieldErr[] = [];
@@ -376,6 +384,66 @@ export async function changeStatus(ctx: AuthContext, id: string, b: { version: n
     }
     throw err;
   }
+}
+
+/** "Answered · Call back" for a contact logged with Update after call (Nov 2026); null for older contacts. */
+function callLabel(c: { answered?: boolean | null; callOutcome?: string | null }) {
+  const o = c.callOutcome ? CALL_OUTCOMES[c.callOutcome as CallOutcome] : null;
+  return o ? `${o.answered ? 'Answered' : 'Not answered'} · ${o.label}` : null;
+}
+
+/**
+ * Update after call (client change, Nov 2026): one save records the call (answered or not, the outcome, the remark),
+ * moves the lead as the outcome says (CALL_OUTCOMES) when that move is allowed, and sets the next follow-up with its
+ * task. A move the user may not make (an assistant marking Lost) or that the pipeline does not allow leaves the status
+ * as it is; the call is still recorded and the response says so (LD-14).
+ */
+export async function recordCall(ctx: AuthContext, id: string, b: { version: number; answered: boolean; outcome: CallOutcome; remark?: string | null; nextFollowUpAt?: Date | null }, req: Request) {
+  const l = await loadLead(ctx, id);
+  await assertNotConverted(l);
+  if (l.version !== b.version) throw AppError.versionConflict(RECORD, await detail(l, ctx));
+  const o = CALL_OUTCOMES[b.outcome];
+  const errs: FieldErr[] = [];
+  if (o.answered !== b.answered) errs.push({ field: 'outcome', messageId: 'VAL-22' });
+  if (o.followUp === 'REQUIRED' && !b.nextFollowUpAt) errs.push({ field: 'nextFollowUpAt', messageId: 'GEN-01', params: { 'Field label': 'Next follow-up' } });
+  if (errs.length) throw AppError.fields(errs);
+  const from = l.status as LeadStatus;
+  const followAt = o.followUp === 'NONE' ? null : b.nextFollowUpAt ?? null;
+  // Where the lead goes: the outcome's status, else NEW → CONTACTED (a call was made), else it stays
+  let to: LeadStatus = (o.to ?? (from === 'NEW' ? 'CONTACTED' : from)) as LeadStatus;
+  let kept = false;
+  // A call is a contact: a NEW lead goes through Contacted on the way (NEW → CONTACTED → QUALIFIED)
+  const via: LeadStatus | null = to !== from && !canMove(from, to) && canMove(from, 'CONTACTED') && canMove('CONTACTED', to) ? 'CONTACTED' : null;
+  const allowed = (a: LeadStatus, z: LeadStatus) => canMove(a, z) && !(advisorOnly(a, z) && !can(ctx.role, 'leads.loseReopen'));
+  if (to !== from && !(via ? allowed(from, via) && allowed(via, to) : allowed(from, to))) { to = from; kept = true; }
+  const hops: Array<[LeadStatus, LeadStatus]> = to === from ? [] : via ? [[from, via], [via, to]] : [[from, to]];
+  // A lost lead keeps no follow-up; "Already insured" with a date gets a reminder task on its own
+  const lostReminder = to === 'LOST' && !!followAt;
+  const now = clock.now();
+  const contact = { _id: newId('act'), outcome: o.contact, channel: 'CALL', note: b.remark ?? null, at: now, by: ctx.userId, answered: o.answered, callOutcome: b.outcome };
+  const set: Record<string, unknown> = {};
+  if (to !== from) Object.assign(set, { status: to, isOpen: to !== 'LOST' });
+  if (to === 'LOST') Object.assign(set, { lostReason: 'lost' in o ? o.lost : 'Other', lostNote: b.remark ?? null, nextFollowUpAt: null });
+  else if (followAt) set.nextFollowUpAt = followAt;
+  const updated = await withTx(async (session) => {
+    const u = await Lead.findOneAndUpdate(
+      { _id: id, accountId: l.accountId, version: b.version, status: from },
+      { $set: set, $inc: { version: 1 }, $push: { contacts: contact, ...(hops.length ? { stageHistory: { $each: hops.map(([x, y]) => ({ from: x, to: y, reason: y === 'LOST' && 'lost' in o ? o.lost : null, note: b.remark ?? null, by: ctx.userId, at: now })) } } : {}) } },
+      { new: true, session },
+    ).lean<LeadDoc>();
+    if (!u) throw AppError.versionConflict(RECORD, null);
+    if (to === 'LOST') await cancelFollowUpTask(id, session);
+    else if (followAt) await setFollowUpTask(u, ctx.userId, session);
+    if (lostReminder) {
+      await new Task({ accountId: l.accountId, kind: 'LEAD_FOLLOW_UP', title: `Call ${l.name} (${l.number}) again: ${o.label.toLowerCase()}`, dueAt: followAt, linkedType: 'LEAD', linkedId: id, createdBy: ctx.userId }).save({ session: session ?? undefined });
+    }
+    await audit({ entity: RECORD, entityId: id, entityRef: l.number, action: 'LEAD_CALL_RECORDED',
+      before: { status: from }, after: { status: to, answered: o.answered, outcome: b.outcome, remark: b.remark ?? null, nextFollowUpAt: followAt } }, { req, session });
+    return u;
+  });
+  const lead = await detail(updated, ctx);
+  if (kept && to !== (o.to ?? to)) return { lead, messageId: 'LD-14' as MessageId, params: { outcome: o.label, status: STATUS_LABEL[from] } };
+  return { lead, messageId: (to !== from ? 'LD-13' : 'LD-12') as MessageId, params: { outcome: o.label, status: STATUS_LABEL[to] } };
 }
 
 /** Log contact (P-13 step 2): outcome required, note optional; added to the timeline with date and time. */
@@ -482,7 +550,7 @@ export async function timeline(ctx: AuthContext, id: string, types?: string[]) {
   const accountId = accountOf(ctx);
   type Item = { type: string; at: Date; title: string; detail?: string | null; by?: string | null; refId?: string | null };
   const items: Item[] = [];
-  if (want('CONTACT')) for (const c of lead.contacts ?? []) items.push({ type: 'CONTACT', at: c.at, title: OUTCOME_LABEL[c.outcome as keyof typeof OUTCOME_LABEL] ?? c.outcome, detail: c.note ?? null, by: c.by, refId: c._id, channel: (c as { channel?: string | null }).channel ?? null } as Item);
+  if (want('CONTACT')) for (const c of lead.contacts ?? []) items.push({ type: 'CONTACT', at: c.at, title: callLabel(c) ?? OUTCOME_LABEL[c.outcome as keyof typeof OUTCOME_LABEL] ?? c.outcome, detail: c.note ?? null, by: c.by, refId: c._id, channel: (c as { channel?: string | null }).channel ?? null } as Item);
   if (want('STATUS')) for (const h of lead.stageHistory ?? []) items.push({ type: 'STATUS', at: h.at, title: h.from ? `${STATUS_LABEL[h.from as LeadStatus] ?? h.from} → ${STATUS_LABEL[h.to as LeadStatus] ?? h.to}` : `Created as ${STATUS_LABEL[h.to as LeadStatus] ?? h.to}`, by: h.by ?? null });
   const { Task } = await import('../tasks/task.model.js');
   if (want('TASK') || want('FOLLOW_UP')) {

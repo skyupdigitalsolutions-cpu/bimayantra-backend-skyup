@@ -4,7 +4,7 @@ import { allow, writable } from '../../middleware/authorize.js';
 import { idempotent } from '../../middleware/idempotency.js';
 import { validate } from '../../middleware/validate.js';
 import { sendData, sendDone } from '../../lib/response.js';
-import { contactBody, convertBody, createLeadBody, duplicateQuery, labels, leadIdParam, listLeadsQuery, statusBody, updateLeadBody, timelineQuery } from './leads.schemas.js';
+import { callBody, contactBody, convertBody, createLeadBody, duplicateQuery, labels, leadIdParam, listLeadsQuery, statusBody, updateLeadBody, timelineQuery } from './leads.schemas.js';
 import * as leads from './leads.service.js';
 import * as withdrawal from './withdrawal.service.js';
 import { z } from 'zod';
@@ -38,6 +38,11 @@ export function leadRoutes() {
     sendDone(res, await leads.updateLead(req.auth!, id(req), req.body, req), 'GEN-08', { 'Record type': 'Lead' }));
   r.post('/:id/status', writable, validate({ params: leadIdParam, body: statusBody }, labels), idempotent(), async (req, res) => {
     const out = await leads.changeStatus(req.auth!, id(req), req.body, req);
+    sendDone(res, out.lead, out.messageId, out.params);
+  });
+  // Update after call (Nov 2026): answered / not answered, outcome, remark, next follow-up
+  r.post('/:id/calls', writable, validate({ params: leadIdParam, body: callBody }, labels), idempotent(), async (req, res) => {
+    const out = await leads.recordCall(req.auth!, id(req), req.body, req);
     sendDone(res, out.lead, out.messageId, out.params);
   });
   r.post('/:id/contacts', writable, validate({ params: leadIdParam, body: contactBody }, labels), idempotent(), async (req, res) =>

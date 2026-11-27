@@ -5,12 +5,12 @@ import {
 import { pageQuery } from '../../lib/pagination.js';
 import { sourceCodeOf } from '../../lib/leadSources.js';
 import { customerExtrasBody } from '../customers/customers.schemas.js';
-import { CONTACT_CHANNELS, CONTACT_OUTCOMES, PRIORITIES } from './lead.model.js';
+import { CALL_OUTCOME_CODES, CONTACT_CHANNELS, CONTACT_OUTCOMES, PRIORITIES } from './lead.model.js';
 import { LEAD_STATUSES } from './leadStatus.js';
 
 export const labels = {
   pipelineId: 'Pipeline', name: 'Lead name', mobile: 'Primary mobile', altMobile: 'Alternate mobile', email: 'Email', source: 'Source',
-  referrerId: 'Referrer', referredByCustomerId: 'Referred by client', campaign: 'Campaign name', interests: 'Insurance interest',
+  referrerId: 'Referrer', referredByCustomerId: 'Referred by client', referredByName: 'Referred by', referredByMobile: 'Their mobile', answered: 'Answered', remark: 'Remark', campaign: 'Campaign name', interests: 'Insurance interest',
   priority: 'Priority', nextFollowUpAt: 'Next follow-up', notes: 'Notes', status: 'New status', lostReason: 'Lost reason', note: 'Note',
   outcome: 'Outcome', channel: 'Contact method', mode: 'Conversion', customerId: 'Customer', version: 'Version',
 };
@@ -34,6 +34,8 @@ export const createLeadBody = z.object({
   source: required(leadSource()),
   referrerId: optional(recordId('usr')),
   referredByCustomerId: optional(recordId('cus')),
+  referredByName: optional(personName()), // REFERRED_BY_OTHER
+  referredByMobile: optional(mobile()),
   campaign: optional(shortText()),
   interests: interests().optional(),
   priority: optional(enumOf(PRIORITIES)),
@@ -52,6 +54,8 @@ export const updateLeadBody = z.object({
   source: editable(leadSource()),
   referrerId: optional(recordId('usr')),
   referredByCustomerId: optional(recordId('cus')),
+  referredByName: optional(personName()), // REFERRED_BY_OTHER
+  referredByMobile: optional(mobile()),
   campaign: optional(shortText()),
   interests: interests().optional(),
   priority: editable(enumOf(PRIORITIES)),
@@ -67,6 +71,15 @@ export const statusBody = z.object({
   lostReason: optional(oneOf(lists.lostReasons)),
   note: optional(notes()),
 });
+
+/** Update after call (Nov 2026): answered or not, the outcome, a remark, and the next follow-up. */
+export const callBody = z.object({
+  version: required(version()),
+  answered: z.boolean({ required_error: 'GEN-01', invalid_type_error: 'VAL-22' }),
+  outcome: required(enumOf(CALL_OUTCOME_CODES)),
+  remark: optional(notes()),
+  nextFollowUpAt: optional(futureDateTime()),
+}).strict();
 
 export const contactBody = z.object({ outcome: required(enumOf(CONTACT_OUTCOMES)), channel: optional(enumOf(CONTACT_CHANNELS)), note: optional(notes()) });
 

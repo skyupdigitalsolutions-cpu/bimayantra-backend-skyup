@@ -465,6 +465,9 @@ export const MESSAGES = {
   'LD-09': 'Alternate mobile must be different from the primary mobile.',
   'LD-10': 'Customer {customer number} created from lead {lead number}.',
   'LD-11': 'Lead {lead number} linked to existing customer {customer number}.',
+  'LD-12': 'Call recorded: {outcome}.',
+  'LD-13': 'Call recorded: {outcome}. Lead moved to {status}.',
+  'LD-14': 'Call recorded: {outcome}. The lead stays {status}: only the advisor can make that change.',
 
   // ── Customers (Section 8) ──
   'CU-01': 'Customer {customer number} created.',

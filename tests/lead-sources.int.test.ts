@@ -33,7 +33,7 @@ async function oldLead(accountId: string, pipelineId: string, source: string, n:
 describe('reference lists', () => {
   it('offers the new-lead sources in design order with their rules; Paid ads only as a retired label', async () => {
     const r = (await request(app).get('/v1/reference')).body.data;
-    expect(r.leadSources).toEqual(['Meta Ads', 'Google Ads', 'Website', 'Social media', 'Referred by a client', 'Referred by a referrer', 'Walk-in or personal contact', 'Campaign', 'Manual entry', 'Other']);
+    expect(r.leadSources).toEqual(['Meta Ads', 'Google Ads', 'Website', 'Social media', 'Referred by a client', 'Referred by a referrer', 'Referred by someone else', 'Walk-in or personal contact', 'Campaign', 'Manual entry', 'Other']);
     expect(r.leadSourceOptions.find((o: { code: string }) => o.code === 'META_ADS')).toEqual({ code: 'META_ADS', label: 'Meta Ads', needs: null, campaignName: 'OPTIONAL' });
     expect(r.leadSourceOptions.find((o: { code: string }) => o.code === 'CAMPAIGN')).toMatchObject({ campaignName: 'REQUIRED' });
     expect(r.leadSourceOptions.find((o: { code: string }) => o.code === 'REFERRED_BY_REFERRER')).toMatchObject({ needs: 'REFERRER' });

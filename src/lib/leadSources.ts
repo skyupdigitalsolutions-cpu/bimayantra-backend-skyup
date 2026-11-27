@@ -10,7 +10,7 @@
  *
  * This file has no imports, so config/cfg.ts can validate CFG-133 against it.
  */
-export type SourceNeeds = 'REFERRER' | 'CLIENT' | null;
+export type SourceNeeds = 'REFERRER' | 'CLIENT' | 'PERSON' | null;
 export type CampaignName = 'REQUIRED' | 'OPTIONAL' | null;
 interface SourceDef {
   label: string;
@@ -29,6 +29,8 @@ export const LEAD_SOURCES = {
   SOCIAL_MEDIA: { label: 'Social media', needs: null, campaignName: null },
   REFERRED_BY_CLIENT: { label: 'Referred by a client', needs: 'CLIENT', campaignName: null },
   REFERRED_BY_REFERRER: { label: 'Referred by a referrer', needs: 'REFERRER', campaignName: null },
+  // Client change (Nov 2026): a referral from someone who is neither a client nor a registered referrer (name typed)
+  REFERRED_BY_OTHER: { label: 'Referred by someone else', needs: 'PERSON', campaignName: null },
   WALK_IN: { label: 'Walk-in or personal contact', needs: null, campaignName: null },
   CAMPAIGN: { label: 'Campaign', needs: null, campaignName: 'REQUIRED' },
   MANUAL_ENTRY: { label: 'Manual entry', needs: null, campaignName: null },
@@ -45,7 +47,7 @@ export const LEAD_SOURCE_CODES = Object.keys(LEAD_SOURCES) as LeadSourceCode[];
 
 /** The default CFG-133: the new-lead form of the October 2026 design, in its order. */
 export const DEFAULT_OFFERED_SOURCES: LeadSourceCode[] = [
-  'META_ADS', 'GOOGLE_ADS', 'WEBSITE', 'SOCIAL_MEDIA', 'REFERRED_BY_CLIENT', 'REFERRED_BY_REFERRER', 'WALK_IN', 'CAMPAIGN', 'MANUAL_ENTRY', 'OTHER',
+  'META_ADS', 'GOOGLE_ADS', 'WEBSITE', 'SOCIAL_MEDIA', 'REFERRED_BY_CLIENT', 'REFERRED_BY_REFERRER', 'REFERRED_BY_OTHER', 'WALK_IN', 'CAMPAIGN', 'MANUAL_ENTRY', 'OTHER',
 ];
 
 export const isSourceCode = (v: unknown): v is LeadSourceCode => typeof v === 'string' && v in LEAD_SOURCES;
